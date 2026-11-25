@@ -22,7 +22,10 @@ export class Coordination extends Context.Tag("relay/Coordination")<Coordination
   readonly updateTask: (id: TaskId, patch: { status?: TaskStatus; title?: string; description?: string }, actor: string) =>
     Effect.Effect<Task, NotFound | InvalidTransition>
   readonly reportProgress: (id: TaskId, message: string, actor: string) => Effect.Effect<RelayEvent, NotFound>
+  readonly publishArtifact: (id: TaskId, artifact: string, actor: string) => Effect.Effect<RelayEvent, NotFound>
   readonly completeTask: (id: TaskId, actor: string) => Effect.Effect<Task, NotFound | InvalidTransition>
+  readonly waitForTask: (id: TaskId, statuses: ReadonlyArray<TaskStatus>) =>
+    Effect.Effect<Task, NotFound, Scope.Scope>
   readonly getEvents: (afterId?: number) => Effect.Effect<ReadonlyArray<RelayEvent>>
   readonly subscribe: (taskId: TaskId, types?: ReadonlyArray<EventType>) => Effect.Effect<Queue.Dequeue<RelayEvent>, never, Scope.Scope>
 }>() {}
@@ -30,6 +33,14 @@ export class Coordination extends Context.Tag("relay/Coordination")<Coordination
 const event = (taskId: TaskId, type: EventType, actor: string, payload: Record<string, unknown>): Omit<RelayEvent, "id"> => ({
   taskId, type, actor, payload, createdAt: Date.now()
 })
+
+const canTransition = (from: TaskStatus, to: TaskStatus): boolean => ({
+  pending: ["pending", "in_progress", "blocked", "cancelled"],
+  in_progress: ["in_progress", "blocked", "completed", "cancelled"],
+  blocked: ["blocked", "in_progress", "cancelled"],
+  completed: ["completed"],
+  cancelled: ["cancelled"]
+}[from] as ReadonlyArray<TaskStatus>).includes(to)
 
 export const CoordinationLive = Layer.effect(
   Coordination,
@@ -82,7 +93,7 @@ export const CoordinationLive = Layer.effect(
       }),
       updateTask: (id, patch, actor) => Effect.gen(function* () {
         const current = yield* getTask(id)
-        if (patch.status === "completed" && current.status === "cancelled") {
+        if (patch.status && !canTransition(current.status, patch.status)) {
           return yield* Effect.fail(new InvalidTransition({ from: current.status, to: patch.status }))
         }
         const updated = { ...current, ...patch, updatedAt: Date.now() } as Task
@@ -94,12 +105,28 @@ export const CoordinationLive = Layer.effect(
         yield* store.saveTask(updated)
         return yield* publish(event(id, "ProgressReported", actor, { message }))
       }),
+      publishArtifact: (id, artifact, actor) => Effect.gen(function* () {
+        const current = yield* getTask(id)
+        const updated = { ...current, artifacts: [...current.artifacts, artifact], updatedAt: Date.now() }
+        yield* store.saveTask(updated)
+        return yield* publish(event(id, "ArtifactPublished", actor, { artifact }))
+      }),
       completeTask: (id, actor) => Effect.gen(function* () {
         const current = yield* getTask(id)
         if (current.status === "cancelled" || current.status === "completed") {
           return yield* Effect.fail(new InvalidTransition({ from: current.status, to: "completed" }))
         }
         return yield* save({ ...current, status: "completed", updatedAt: Date.now() }, "TaskCompleted", actor, {})
+      }),
+      waitForTask: (id, statuses) => Effect.gen(function* () {
+        const queue = yield* PubSub.subscribe(pubsub)
+        const loop = (): Effect.Effect<Task, NotFound, Scope.Scope> => Effect.gen(function* () {
+          const current = yield* getTask(id)
+          if (statuses.includes(current.status)) return current
+          yield* Queue.take(queue)
+          return yield* loop()
+        })
+        return yield* loop()
       }),
       getEvents: (afterId) => store.listEvents(afterId),
       subscribe: (taskId, types) => Effect.gen(function* () {
