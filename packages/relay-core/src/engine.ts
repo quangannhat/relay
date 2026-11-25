@@ -72,10 +72,18 @@ export const CoordinationLive = Layer.effect(
           repositories.find(r => r.id === input.repositoryId)
             ? Effect.succeed(true) : Effect.fail(new NotFound({ entity: "repository", id: input.repositoryId })))
         void repository
+        const existingTasks = yield* store.listTasks()
+        for (const dependency of input.dependencies ?? []) {
+          if (!existingTasks.some(task => task.id === dependency)) {
+            return yield* Effect.fail(new NotFound({ entity: "task", id: dependency }))
+          }
+        }
         const now = Date.now()
         const task = {
           id: `T-${randomUUID().slice(0, 8)}`, repositoryId: input.repositoryId, title: input.title,
-          description: input.description ?? "", status: "pending" as const, priority: input.priority ?? "normal",
+          description: input.description ?? "",
+          status: input.dependencies?.length ? "blocked" as const : "pending" as const,
+          priority: input.priority ?? "normal",
           assignee: null, dependencies: [...(input.dependencies ?? [])], progress: [], artifacts: [],
           createdAt: now, updatedAt: now
         } as unknown as Task
@@ -86,6 +94,10 @@ export const CoordinationLive = Layer.effect(
       claimTask: (id, actor) => Effect.gen(function* () {
         const current = yield* getTask(id)
         if (current.status !== "pending" || current.assignee !== null) return yield* Effect.fail(new Conflict({ message: "task is already claimed or not pending" }))
+        const tasks = yield* store.listTasks()
+        if (!current.dependencies.every(dependency => tasks.some(task => task.id === dependency && task.status === "completed"))) {
+          return yield* Effect.fail(new Conflict({ message: "task dependencies are not completed" }))
+        }
         const claimed = yield* store.claimTask(id, actor, Date.now())
         if (!claimed) return yield* Effect.fail(new Conflict({ message: "task was claimed concurrently" }))
         yield* PubSub.publish(pubsub, claimed.event)
@@ -116,7 +128,18 @@ export const CoordinationLive = Layer.effect(
         if (current.status === "cancelled" || current.status === "completed") {
           return yield* Effect.fail(new InvalidTransition({ from: current.status, to: "completed" }))
         }
-        return yield* save({ ...current, status: "completed", updatedAt: Date.now() }, "TaskCompleted", actor, {})
+        const completed = yield* save({ ...current, status: "completed", updatedAt: Date.now() }, "TaskCompleted", actor, {})
+        const tasks = yield* store.listTasks()
+        for (const dependent of tasks) {
+          if (dependent.status === "blocked" && dependent.dependencies.includes(id)) {
+            const dependenciesReady = dependent.dependencies.every(dependency =>
+              tasks.some(task => task.id === dependency && (task.id === id || task.status === "completed")))
+            if (dependenciesReady) {
+              yield* save({ ...dependent, status: "pending", updatedAt: Date.now() }, "TaskUnblocked", actor, { dependency: id })
+            }
+          }
+        }
+        return completed
       }),
       waitForTask: (id, statuses) => Effect.gen(function* () {
         const queue = yield* PubSub.subscribe(pubsub)

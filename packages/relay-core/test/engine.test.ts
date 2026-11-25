@@ -1,5 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { Effect, Fiber, Queue } from "effect"
+import { rmSync } from "node:fs"
+import { join } from "node:path"
 import { Coordination, CoordinationLive } from "../src/engine.js"
 import { StoreLive } from "../src/store.js"
 
@@ -79,4 +81,51 @@ describe("Relay coordination engine", () => {
     }))
     expect(result._tag).toBe("Left")
   })
+
+  it("blocks dependent tasks and unblocks them after completion", async () => {
+    const result = await withRelay(Effect.gen(function* () {
+      const relay = yield* Coordination
+      const repo = yield* relay.registerRepository("repo", [])
+      const dependency = yield* relay.createTask({ repositoryId: repo.id, title: "Dependency" })
+      const dependent = yield* relay.createTask({
+        repositoryId: repo.id, title: "Dependent", dependencies: [dependency.id]
+      })
+      const before = yield* relay.claimTask(dependent.id, "agent-b").pipe(Effect.either)
+      yield* relay.claimTask(dependency.id, "agent-a")
+      yield* relay.completeTask(dependency.id, "agent-a")
+      const after = yield* relay.getTask(dependent.id)
+      return { before, after }
+    }))
+    expect(result.before._tag).toBe("Left")
+    expect(result.after.status).toBe("pending")
+  })
+
+  it("recovers task state and events after a store restart", async () => {
+    const file = join(process.cwd(), `.relay-restart-${crypto.randomUUID()}.db`)
+    try {
+      const created = await withFileRelay(file, Effect.gen(function* () {
+        const relay = yield* Coordination
+        const repo = yield* relay.registerRepository("persistent", [])
+        const task = yield* relay.createTask({ repositoryId: repo.id, title: "Survive restart" })
+        yield* relay.claimTask(task.id, "agent-a")
+        return task.id
+      }))
+      const recovered = await withFileRelay(file, Effect.gen(function* () {
+        const relay = yield* Coordination
+        return { task: yield* relay.getTask(created), events: yield* relay.getEvents() }
+      }))
+      expect(recovered.task.assignee).toBe("agent-a")
+      expect(recovered.events.length).toBe(2)
+    } finally {
+      rmSync(file, { force: true })
+      rmSync(`${file}-wal`, { force: true })
+      rmSync(`${file}-shm`, { force: true })
+    }
+  })
 })
+
+const withFileRelay = <A>(file: string, program: Effect.Effect<A, any, never>) =>
+  Effect.runPromise(Effect.scoped(program.pipe(
+    Effect.provide(CoordinationLive),
+    Effect.provide(StoreLive(file))
+  )))

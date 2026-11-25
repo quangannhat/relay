@@ -36,7 +36,7 @@ export type Task = Schema.Schema.Type<typeof Task>
 
 export const EventType = Schema.Literal(
   "TaskCreated", "TaskClaimed", "TaskUpdated", "TaskCompleted", "TaskBlocked",
-  "ProgressReported", "ArtifactPublished"
+  "TaskUnblocked", "ProgressReported", "ArtifactPublished"
 )
 export type EventType = Schema.Schema.Type<typeof EventType>
 
