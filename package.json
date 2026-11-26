@@ -6,6 +6,7 @@
   "scripts": {
     "build": "bun run --filter '*' build",
     "core": "bun run --filter relay-core start",
+    "mcp": "bun run packages/relay-mcp/src/main.ts",
     "tui": "bun run --filter relay-tui start",
     "test": "bun test"
   },

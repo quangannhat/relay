@@ -29,6 +29,7 @@ export const Task = Schema.Struct({
   dependencies: Schema.Array(TaskId),
   progress: Schema.Array(Schema.String),
   artifacts: Schema.Array(Schema.String),
+  revision: Schema.Number,
   createdAt: Schema.Number,
   updatedAt: Schema.Number
 })

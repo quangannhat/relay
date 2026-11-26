@@ -5,6 +5,11 @@ import type { RelayEvent, Repository, Task, TaskId } from "./domain.js"
 type TaskRow = Omit<Task, "dependencies" | "progress" | "artifacts"> & {
   dependencies: string; progress: string; artifacts: string
 }
+export type TaskMutation = {
+  readonly task: Task
+  readonly event: Omit<RelayEvent, "id">
+  readonly expectedRevision?: number
+}
 const taskFromRow = (row: TaskRow): Task => ({
   id: row.id,
   repositoryId: (row as any).repository_id,
@@ -16,6 +21,7 @@ const taskFromRow = (row: TaskRow): Task => ({
   dependencies: JSON.parse(row.dependencies),
   progress: JSON.parse(row.progress),
   artifacts: JSON.parse(row.artifacts),
+  revision: row.revision,
   createdAt: row.createdAt,
   updatedAt: row.updatedAt
 })
@@ -23,11 +29,11 @@ const taskFromRow = (row: TaskRow): Task => ({
 export class Store extends Context.Tag("relay/Store")<Store, {
   readonly addRepository: (repository: Repository) => Effect.Effect<void>
   readonly listRepositories: () => Effect.Effect<ReadonlyArray<Repository>>
-  readonly saveTask: (task: Task) => Effect.Effect<void>
+  readonly saveTaskAndEvent: (task: Task, event: Omit<RelayEvent, "id">, expectedRevision?: number) => Effect.Effect<RelayEvent | undefined>
+  readonly saveTasksAndEvents: (mutations: ReadonlyArray<TaskMutation>) => Effect.Effect<ReadonlyArray<RelayEvent> | undefined>
   readonly listTasks: () => Effect.Effect<ReadonlyArray<Task>>
   readonly getTask: (id: TaskId) => Effect.Effect<Task | undefined>
   readonly claimTask: (id: TaskId, actor: string, now: number) => Effect.Effect<{ task: Task; event: RelayEvent } | undefined>
-  readonly appendEvent: (event: Omit<RelayEvent, "id">) => Effect.Effect<RelayEvent>
   readonly listEvents: (afterId?: number) => Effect.Effect<ReadonlyArray<RelayEvent>>
 }>() {}
 
@@ -45,6 +51,7 @@ export const StoreLive = (file = "relay.db") => Layer.scoped(
           id TEXT PRIMARY KEY, repository_id TEXT NOT NULL, title TEXT NOT NULL, description TEXT NOT NULL,
           status TEXT NOT NULL, priority TEXT NOT NULL, assignee TEXT, dependencies TEXT NOT NULL,
           progress TEXT NOT NULL, artifacts TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+          revision INTEGER NOT NULL DEFAULT 0,
           FOREIGN KEY (repository_id) REFERENCES repositories(id)
         );
         CREATE TABLE IF NOT EXISTS events (
@@ -52,6 +59,10 @@ export const StoreLive = (file = "relay.db") => Layer.scoped(
           actor TEXT NOT NULL, payload TEXT NOT NULL, created_at INTEGER NOT NULL
         );
       `)
+      const taskColumns = db.query("PRAGMA table_info(tasks)").all() as Array<{ name: string }>
+      if (!taskColumns.some(column => column.name === "revision")) {
+        db.exec("ALTER TABLE tasks ADD COLUMN revision INTEGER NOT NULL DEFAULT 0")
+      }
       return db
     }),
     db => Effect.sync(() => db.close())
@@ -63,13 +74,44 @@ export const StoreLive = (file = "relay.db") => Layer.scoped(
     const listRepositories = () => Effect.sync(() =>
       db.query("SELECT id, name, paths, created_at as createdAt FROM repositories ORDER BY name")
         .all().map((r: any) => ({ ...r, paths: JSON.parse(r.paths) })))
-    const saveTask = (value: Task) => Effect.sync(() => {
-      db.query(`
-        INSERT OR REPLACE INTO tasks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(value.id, value.repositoryId, value.title, value.description, value.status, value.priority,
-        value.assignee, JSON.stringify(value.dependencies), JSON.stringify(value.progress),
-        JSON.stringify(value.artifacts), value.createdAt, value.updatedAt)
+    const saveTasksAndEvents = (mutations: ReadonlyArray<TaskMutation>) => Effect.sync(() => {
+      const staleRevision = Symbol("stale revision")
+      const transaction = db.transaction(() => {
+        const savedEvents: Array<RelayEvent> = []
+        for (const { task, event, expectedRevision } of mutations) {
+          if (expectedRevision === undefined) {
+            db.query(`
+              INSERT INTO tasks
+                (id, repository_id, title, description, status, priority, assignee, dependencies, progress, artifacts, created_at, updated_at, revision)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `).run(task.id, task.repositoryId, task.title, task.description, task.status, task.priority,
+              task.assignee, JSON.stringify(task.dependencies), JSON.stringify(task.progress),
+              JSON.stringify(task.artifacts), task.createdAt, task.updatedAt, task.revision)
+          } else {
+            const result = db.query(`
+              UPDATE tasks SET repository_id = ?, title = ?, description = ?, status = ?, priority = ?,
+                assignee = ?, dependencies = ?, progress = ?, artifacts = ?, updated_at = ?, revision = ?
+              WHERE id = ? AND revision = ?
+            `).run(task.repositoryId, task.title, task.description, task.status, task.priority,
+              task.assignee, JSON.stringify(task.dependencies), JSON.stringify(task.progress),
+              JSON.stringify(task.artifacts), task.updatedAt, task.revision, task.id, expectedRevision)
+            if (result.changes === 0) throw staleRevision
+          }
+          const inserted = db.query("INSERT INTO events (type, task_id, actor, payload, created_at) VALUES (?, ?, ?, ?, ?)")
+            .run(event.type, event.taskId, event.actor, JSON.stringify(event.payload), event.createdAt)
+          savedEvents.push({ ...event, id: Number(inserted.lastInsertRowid) })
+        }
+        return savedEvents
+      })
+      try {
+        return transaction()
+      } catch (error) {
+        if (error === staleRevision) return undefined
+        throw error
+      }
     })
+    const saveTaskAndEvent = (task: Task, event: Omit<RelayEvent, "id">, expectedRevision?: number) =>
+      Effect.map(saveTasksAndEvents([{ task, event, expectedRevision }]), events => events?.[0])
     const listTasks = () => Effect.sync(() =>
       db.query("SELECT *, created_at as createdAt, updated_at as updatedAt FROM tasks ORDER BY updated_at DESC")
         .all().map((r: any) => taskFromRow(r)))
@@ -79,7 +121,7 @@ export const StoreLive = (file = "relay.db") => Layer.scoped(
     })
     const claimTask = (id: TaskId, actor: string, now: number) => Effect.sync(() => {
       const transaction = db.transaction(() => {
-        const result = db.query("UPDATE tasks SET status = 'in_progress', assignee = ?, updated_at = ? WHERE id = ? AND status = 'pending' AND assignee IS NULL")
+        const result = db.query("UPDATE tasks SET status = 'in_progress', assignee = ?, updated_at = ?, revision = revision + 1 WHERE id = ? AND status = 'pending' AND assignee IS NULL")
           .run(actor, now, id)
         if (result.changes === 0) return undefined
         const row = db.query("SELECT *, created_at as createdAt, updated_at as updatedAt FROM tasks WHERE id = ?").get(id) as TaskRow
@@ -90,16 +132,11 @@ export const StoreLive = (file = "relay.db") => Layer.scoped(
       })
       return transaction()
     })
-    const appendEvent = (value: Omit<RelayEvent, "id">) => Effect.sync(() => {
-        const result = db.query("INSERT INTO events (type, task_id, actor, payload, created_at) VALUES (?, ?, ?, ?, ?)")
-          .run(value.type, value.taskId, value.actor, JSON.stringify(value.payload), value.createdAt)
-        return { ...value, id: Number(result.lastInsertRowid) }
-    })
     const listEvents = (afterId = 0) => Effect.sync(() =>
       db.query("SELECT id, type, task_id as taskId, actor, payload, created_at as createdAt FROM events WHERE id > ? ORDER BY id")
         .all(afterId).map((r: any) => ({ ...r, payload: JSON.parse(r.payload) })))
     return Store.of({
-      addRepository, listRepositories, saveTask, listTasks, getTask, claimTask, appendEvent, listEvents
+      addRepository, listRepositories, saveTaskAndEvent, saveTasksAndEvents, listTasks, getTask, claimTask, listEvents
     })
   }))
 )

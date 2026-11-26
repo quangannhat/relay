@@ -1,0 +1,16 @@
+{
+  "name": "relay-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit",
+    "start": "bun run src/main.ts"
+  },
+  "dependencies": {
+    "@effect/ai": "^0.37.0",
+    "@effect/platform-node": "^0.108.0",
+    "effect": "^3.22.5",
+    "relay-core": "workspace:*"
+  }
+}

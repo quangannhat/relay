@@ -1,7 +1,7 @@
 import { Context, Effect, Layer, PubSub, Queue, Scope } from "effect"
 import { randomUUID } from "node:crypto"
 import { Conflict, InvalidTransition, NotFound } from "./errors.js"
-import { Store } from "./store.js"
+import { Store, type TaskMutation } from "./store.js"
 import type { EventType, RelayEvent, Repository, Task, TaskId, TaskPriority, TaskStatus } from "./domain.js"
 
 export type NewTask = {
@@ -15,15 +15,15 @@ export type NewTask = {
 export class Coordination extends Context.Tag("relay/Coordination")<Coordination, {
   readonly registerRepository: (name: string, paths: ReadonlyArray<string>) => Effect.Effect<Repository>
   readonly listRepositories: () => Effect.Effect<ReadonlyArray<Repository>>
-  readonly createTask: (input: NewTask, actor?: string) => Effect.Effect<Task, NotFound>
+  readonly createTask: (input: NewTask, actor?: string) => Effect.Effect<Task, NotFound | Conflict>
   readonly listTasks: () => Effect.Effect<ReadonlyArray<Task>>
   readonly getTask: (id: TaskId) => Effect.Effect<Task, NotFound>
   readonly claimTask: (id: TaskId, actor: string) => Effect.Effect<Task, NotFound | Conflict>
   readonly updateTask: (id: TaskId, patch: { status?: TaskStatus; title?: string; description?: string }, actor: string) =>
-    Effect.Effect<Task, NotFound | InvalidTransition>
-  readonly reportProgress: (id: TaskId, message: string, actor: string) => Effect.Effect<RelayEvent, NotFound>
-  readonly publishArtifact: (id: TaskId, artifact: string, actor: string) => Effect.Effect<RelayEvent, NotFound>
-  readonly completeTask: (id: TaskId, actor: string) => Effect.Effect<Task, NotFound | InvalidTransition>
+    Effect.Effect<Task, NotFound | InvalidTransition | Conflict>
+  readonly reportProgress: (id: TaskId, message: string, actor: string) => Effect.Effect<RelayEvent, NotFound | Conflict>
+  readonly publishArtifact: (id: TaskId, artifact: string, actor: string) => Effect.Effect<RelayEvent, NotFound | Conflict>
+  readonly completeTask: (id: TaskId, actor: string) => Effect.Effect<Task, NotFound | InvalidTransition | Conflict>
   readonly waitForTask: (id: TaskId, statuses: ReadonlyArray<TaskStatus>) =>
     Effect.Effect<Task, NotFound, Scope.Scope>
   readonly getEvents: (afterId?: number) => Effect.Effect<ReadonlyArray<RelayEvent>>
@@ -47,17 +47,13 @@ export const CoordinationLive = Layer.effect(
   Effect.gen(function* () {
     const store = yield* Store
     const pubsub = yield* Effect.acquireRelease(PubSub.unbounded<RelayEvent>(), () => Effect.void)
-    const publish = (input: Omit<RelayEvent, "id">) => Effect.gen(function* () {
-      const saved = yield* store.appendEvent(input)
-      yield* PubSub.publish(pubsub, saved)
-      return saved
-    })
     const getTask = (id: TaskId) => Effect.flatMap(store.getTask(id), task =>
       task ? Effect.succeed(task) : Effect.fail(new NotFound({ entity: "task", id })))
-    const save = (task: Task, type: EventType, actor: string, payload: Record<string, unknown>) =>
+    const save = (task: Task, type: EventType, actor: string, payload: Record<string, unknown>, expectedRevision?: number) =>
       Effect.gen(function* () {
-        yield* store.saveTask(task)
-        yield* publish(event(task.id, type, actor, payload))
+        const savedEvent = yield* store.saveTaskAndEvent(task, event(task.id, type, actor, payload), expectedRevision)
+        if (!savedEvent) return yield* Effect.fail(new Conflict({ message: "task changed concurrently; reload and retry" }))
+        yield* PubSub.publish(pubsub, savedEvent)
         return task
       })
     return Coordination.of({
@@ -84,7 +80,7 @@ export const CoordinationLive = Layer.effect(
           description: input.description ?? "",
           status: input.dependencies?.length ? "blocked" as const : "pending" as const,
           priority: input.priority ?? "normal",
-          assignee: null, dependencies: [...(input.dependencies ?? [])], progress: [], artifacts: [],
+          assignee: null, dependencies: [...(input.dependencies ?? [])], progress: [], artifacts: [], revision: 0,
           createdAt: now, updatedAt: now
         } as unknown as Task
         return yield* save(task, "TaskCreated", actor, { title: task.title })
@@ -108,37 +104,54 @@ export const CoordinationLive = Layer.effect(
         if (patch.status && !canTransition(current.status, patch.status)) {
           return yield* Effect.fail(new InvalidTransition({ from: current.status, to: patch.status }))
         }
-        const updated = { ...current, ...patch, updatedAt: Date.now() } as Task
-        return yield* save(updated, patch.status === "completed" ? "TaskCompleted" : "TaskUpdated", actor, patch)
+        const updated = { ...current, ...patch, revision: current.revision + 1, updatedAt: Date.now() } as Task
+        return yield* save(updated, patch.status === "completed" ? "TaskCompleted" : "TaskUpdated", actor, patch, current.revision)
       }),
       reportProgress: (id, message, actor) => Effect.gen(function* () {
         const current = yield* getTask(id)
-        const updated = { ...current, progress: [...current.progress, message], updatedAt: Date.now() }
-        yield* store.saveTask(updated)
-        return yield* publish(event(id, "ProgressReported", actor, { message }))
+        const updated = { ...current, progress: [...current.progress, message], revision: current.revision + 1, updatedAt: Date.now() }
+        const savedEvent = yield* store.saveTaskAndEvent(updated, event(id, "ProgressReported", actor, { message }), current.revision)
+        if (!savedEvent) return yield* Effect.fail(new Conflict({ message: "task changed concurrently; reload and retry" }))
+        yield* PubSub.publish(pubsub, savedEvent)
+        return savedEvent
       }),
       publishArtifact: (id, artifact, actor) => Effect.gen(function* () {
         const current = yield* getTask(id)
-        const updated = { ...current, artifacts: [...current.artifacts, artifact], updatedAt: Date.now() }
-        yield* store.saveTask(updated)
-        return yield* publish(event(id, "ArtifactPublished", actor, { artifact }))
+        const updated = { ...current, artifacts: [...current.artifacts, artifact], revision: current.revision + 1, updatedAt: Date.now() }
+        const savedEvent = yield* store.saveTaskAndEvent(updated, event(id, "ArtifactPublished", actor, { artifact }), current.revision)
+        if (!savedEvent) return yield* Effect.fail(new Conflict({ message: "task changed concurrently; reload and retry" }))
+        yield* PubSub.publish(pubsub, savedEvent)
+        return savedEvent
       }),
       completeTask: (id, actor) => Effect.gen(function* () {
         const current = yield* getTask(id)
         if (current.status === "cancelled" || current.status === "completed") {
           return yield* Effect.fail(new InvalidTransition({ from: current.status, to: "completed" }))
         }
-        const completed = yield* save({ ...current, status: "completed", updatedAt: Date.now() }, "TaskCompleted", actor, {})
         const tasks = yield* store.listTasks()
+        const now = Date.now()
+        const completed = { ...current, status: "completed" as const, revision: current.revision + 1, updatedAt: now }
+        const mutations: TaskMutation[] = [{
+          task: completed,
+          event: event(id, "TaskCompleted", actor, {}),
+          expectedRevision: current.revision
+        }]
         for (const dependent of tasks) {
           if (dependent.status === "blocked" && dependent.dependencies.includes(id)) {
             const dependenciesReady = dependent.dependencies.every(dependency =>
               tasks.some(task => task.id === dependency && (task.id === id || task.status === "completed")))
             if (dependenciesReady) {
-              yield* save({ ...dependent, status: "pending", updatedAt: Date.now() }, "TaskUnblocked", actor, { dependency: id })
+              mutations.push({
+                task: { ...dependent, status: "pending", revision: dependent.revision + 1, updatedAt: now },
+                event: event(dependent.id, "TaskUnblocked", actor, { dependency: id }),
+                expectedRevision: dependent.revision
+              })
             }
           }
         }
+        const savedEvents = yield* store.saveTasksAndEvents(mutations)
+        if (!savedEvents) return yield* Effect.fail(new Conflict({ message: "task changed concurrently; reload and retry" }))
+        for (const savedEvent of savedEvents) yield* PubSub.publish(pubsub, savedEvent)
         return completed
       }),
       waitForTask: (id, statuses) => Effect.gen(function* () {

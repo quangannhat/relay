@@ -3,7 +3,7 @@ import { Effect, Fiber, Queue } from "effect"
 import { rmSync } from "node:fs"
 import { join } from "node:path"
 import { Coordination, CoordinationLive } from "../src/engine.js"
-import { StoreLive } from "../src/store.js"
+import { Store, StoreLive } from "../src/store.js"
 
 const withRelay = <A>(program: Effect.Effect<A, any, never>) =>
   Effect.runPromise(Effect.scoped(program.pipe(Effect.provide(CoordinationLive), Effect.provide(StoreLive(":memory:")))))
@@ -34,6 +34,33 @@ describe("Relay coordination engine", () => {
     }))
     expect(result.claims.filter(claim => claim._tag === "Right")).toHaveLength(1)
     expect(result.task.assignee === "agent-a" || result.task.assignee === "agent-b").toBe(true)
+  })
+
+  it("rejects stale task revisions without recording their event", async () => {
+    const result = await withRelay(Effect.gen(function* () {
+      const relay = yield* Coordination
+      const store = yield* Store
+      const repo = yield* relay.registerRepository("repo", [])
+      const task = yield* relay.createTask({ repositoryId: repo.id, title: "Original" })
+      const event = {
+        type: "TaskUpdated" as const, taskId: task.id, actor: "agent-a",
+        payload: { title: "First update" }, createdAt: Date.now()
+      }
+      const first = yield* store.saveTaskAndEvent(
+        { ...task, title: "First update", revision: task.revision + 1 }, event, task.revision
+      )
+      const stale = yield* store.saveTaskAndEvent(
+        { ...task, title: "Stale update", revision: task.revision + 1 },
+        { ...event, actor: "agent-b", payload: { title: "Stale update" } },
+        task.revision
+      )
+      return { first, stale, task: yield* relay.getTask(task.id), events: yield* relay.getEvents() }
+    }))
+    expect(result.first).toBeDefined()
+    expect(result.stale).toBeUndefined()
+    expect(result.task.title).toBe("First update")
+    expect(result.task.revision).toBe(1)
+    expect(result.events).toHaveLength(2)
   })
 
   it("filters live notifications and supports incremental history", async () => {
@@ -72,6 +99,20 @@ describe("Relay coordination engine", () => {
     expect(result.artifacts).toEqual(["src/db/repository.ts"])
   })
 
+  it("cancels a task waiter cleanly when its owning fiber is interrupted", async () => {
+    const result = await withRelay(Effect.gen(function* () {
+      const relay = yield* Coordination
+      const repo = yield* relay.registerRepository("repo", [])
+      const task = yield* relay.createTask({ repositoryId: repo.id, title: "Cancel waiter" })
+      const waiter = yield* Effect.fork(relay.waitForTask(task.id, ["completed"]))
+      yield* Fiber.interrupt(waiter)
+      yield* relay.claimTask(task.id, "agent-a")
+      yield* relay.completeTask(task.id, "agent-a")
+      return yield* relay.getTask(task.id)
+    }))
+    expect(result.status).toBe("completed")
+  })
+
   it("rejects invalid status transitions", async () => {
     const result = await withRelay(Effect.gen(function* () {
       const relay = yield* Coordination
@@ -98,6 +139,41 @@ describe("Relay coordination engine", () => {
     }))
     expect(result.before._tag).toBe("Left")
     expect(result.after.status).toBe("pending")
+  })
+
+  it("rolls back completion if a dependent task has a stale revision", async () => {
+    const result = await withRelay(Effect.gen(function* () {
+      const relay = yield* Coordination
+      const store = yield* Store
+      const repo = yield* relay.registerRepository("repo", [])
+      const dependency = yield* relay.createTask({ repositoryId: repo.id, title: "Dependency" })
+      const dependent = yield* relay.createTask({
+        repositoryId: repo.id, title: "Dependent", dependencies: [dependency.id]
+      })
+      const now = Date.now()
+      const saved = yield* store.saveTasksAndEvents([
+        {
+          task: { ...dependency, status: "completed", revision: dependency.revision + 1, updatedAt: now },
+          event: { type: "TaskCompleted", taskId: dependency.id, actor: "agent-a", payload: {}, createdAt: now },
+          expectedRevision: dependency.revision
+        },
+        {
+          task: { ...dependent, status: "pending", revision: dependent.revision + 1, updatedAt: now },
+          event: { type: "TaskUnblocked", taskId: dependent.id, actor: "agent-a", payload: {}, createdAt: now },
+          expectedRevision: dependent.revision + 1
+        }
+      ])
+      return {
+        saved,
+        dependency: yield* relay.getTask(dependency.id),
+        dependent: yield* relay.getTask(dependent.id),
+        events: yield* relay.getEvents()
+      }
+    }))
+    expect(result.saved).toBeUndefined()
+    expect(result.dependency.status).toBe("pending")
+    expect(result.dependent.status).toBe("blocked")
+    expect(result.events).toHaveLength(2)
   })
 
   it("recovers task state and events after a store restart", async () => {
