@@ -13,8 +13,13 @@ const program = Effect.gen(function* () {
     Effect.sync(() => createInterface({ input: process.stdin, output: process.stdout })),
     readline => Effect.sync(() => readline.close())
   )
+  let refreshing = false
   const refresh = async () => {
+    if (refreshing) return
+    refreshing = true
     state.loading = true
+    state.message = "Refreshing from daemon…"
+    render(state)
     try {
       const data = await Effect.runPromise(Effect.gen(function* () {
         const repositories = yield* relay.ListRepositories(undefined)
@@ -31,6 +36,7 @@ const program = Effect.gen(function* () {
       state.message = `Daemon unavailable: ${error instanceof Error ? error.message : String(error)}`
     } finally {
       state.loading = false
+      refreshing = false
       render(state)
     }
   }
@@ -44,7 +50,8 @@ const program = Effect.gen(function* () {
     })
   }))
 
-  yield* Effect.promise(refresh)
+  render(state)
+  void refresh()
   const timer = setInterval(() => void refresh(), 3000)
   yield* Effect.acquireRelease(
     Effect.sync(() => {
