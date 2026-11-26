@@ -100,7 +100,8 @@ this note records the current repository state and the next bounded work.
 - TUI keyboard input uses Bun's `process.stdin` terminal events with a small
   escape-sequence parser; no Node modules or readline layer are used. Raw
   terminal mode is restored on exit.
-- Verification: `bun run build`, `bun test` (12 passing), and `git diff --check`.
+- Verification: `bun run build`, `bun test` (13 passing, including a Bun PTY
+  test that sends `q` and verifies clean process exit), and `git diff --check`.
 
 ## Next steps
 

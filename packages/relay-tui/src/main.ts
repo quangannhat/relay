@@ -5,6 +5,12 @@ import { createState } from "./context/state.js"
 import { render } from "./component/render.js"
 
 const state = createState()
+const stty = (args: string[]) => Bun.spawnSync({
+  cmd: ["stty", ...args],
+  stdin: "inherit",
+  stdout: "pipe",
+  stderr: "ignore"
+})
 
 const program = Effect.gen(function* () {
   const relay = yield* RelayRpcClient
@@ -57,6 +63,8 @@ const program = Effect.gen(function* () {
     }
     if (key === "q" || key === "\u0003") {
       state.running = false
+      state.message = "Shutting down…"
+      render(state)
       return
     }
     if (key === "\u001b[A" || key === "k") state.selected = Math.max(0, state.selected - 1)
@@ -98,16 +106,22 @@ const program = Effect.gen(function* () {
       pending = pending.slice(character.length)
     }
   }
+  let terminalSettings = ""
   yield* Effect.acquireRelease(
     Effect.sync(() => {
-      process.stdin.setRawMode?.(true)
+      if (!process.stdin.isTTY) throw new Error("Relay TUI requires an interactive terminal")
+      const saved = stty(["-g"])
+      if (saved.exitCode !== 0) throw new Error("Unable to read terminal settings (stty -g failed)")
+      terminalSettings = saved.stdout.toString().trim()
+      const raw = stty(["raw", "-echo"])
+      if (raw.exitCode !== 0) throw new Error("Unable to enable terminal key input (stty raw failed)")
       process.stdin.on("data", onData)
       process.stdin.resume()
     }),
     () => Effect.sync(() => {
       clearInterval(timer)
       process.stdin.off("data", onData)
-      if (process.stdin.isTTY) process.stdin.setRawMode(false)
+      if (terminalSettings) stty([terminalSettings])
       process.stdout.write("\u001b[?25h")
     })
   )
@@ -126,6 +140,7 @@ const program = Effect.gen(function* () {
 })
 
 Effect.runPromise(Effect.scoped(program.pipe(Effect.provide(RelayRpcClientLive(relaySocketPath())))))
+  .then(() => process.exit(0))
   .catch(error => {
     console.error(error)
     process.exitCode = 1
