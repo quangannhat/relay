@@ -97,6 +97,10 @@ this note records the current repository state and the next bounded work.
   refresh, and terminal cleanup on exit.
 - The TUI is still intentionally dependency-light and consumes only daemon
   RPC; it does not own SQLite or coordination logic.
+- TUI keyboard input uses `Bun.stdin.stream()` with a small escape-sequence
+  parser; it no longer mixes Node readline with raw stdin input. Bun's
+  `process.stdin.setRawMode` compatibility method is used only to toggle
+  terminal raw mode for immediate key handling, and is restored on exit.
 - Verification: `bun run build`, `bun test` (12 passing), and `git diff --check`.
 
 ## Next steps

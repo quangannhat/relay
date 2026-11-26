@@ -3,16 +3,11 @@ import { RelayRpcClient, RelayRpcClientLive } from "relay-daemon/client"
 import { relaySocketPath } from "relay-daemon/socket"
 import { createState } from "./context/state.js"
 import { render } from "./component/render.js"
-import { createInterface } from "node:readline"
 
 const state = createState()
 
 const program = Effect.gen(function* () {
   const relay = yield* RelayRpcClient
-  const input = yield* Effect.acquireRelease(
-    Effect.sync(() => createInterface({ input: process.stdin, output: process.stdout })),
-    readline => Effect.sync(() => readline.close())
-  )
   let refreshing = false
   const refresh = async () => {
     if (refreshing) return
@@ -40,16 +35,6 @@ const program = Effect.gen(function* () {
       render(state)
     }
   }
-  const ask = (question: string) => Effect.promise<string>(() => new Promise(resolve => {
-    process.stdin.off("data", onKey)
-    if (process.stdin.isTTY) process.stdin.setRawMode(false)
-    input.question(question, answer => {
-      if (process.stdin.isTTY) process.stdin.setRawMode(true)
-      process.stdin.on("data", onKey)
-      resolve(answer)
-    })
-  }))
-
   render(state)
   void refresh()
   const timer = setInterval(() => void refresh(), 3000)
@@ -57,11 +42,9 @@ const program = Effect.gen(function* () {
     Effect.sync(() => {
       process.stdin.setRawMode?.(true)
       process.stdin.resume()
-      process.stdin.on("data", onKey)
     }),
     () => Effect.sync(() => {
       clearInterval(timer)
-      process.stdin.off("data", onKey)
       if (process.stdin.isTTY) process.stdin.setRawMode(false)
       process.stdout.write("\u001b[?25h")
     })
@@ -69,6 +52,21 @@ const program = Effect.gen(function* () {
   process.stdout.write("\u001b[?25l")
 
   const handleKey = (key: string) => Effect.gen(function* () {
+    if (state.titleInput !== null) {
+      if (key === "\r" || key === "\n") {
+        const title = state.titleInput.trim()
+        state.titleInput = null
+        if (title && state.repositories.length) {
+          yield* relay.CreateTask({ repositoryId: state.repositories[0].id, title, actor: "human" })
+          state.message = "Task created."
+          yield* Effect.promise(refresh)
+        }
+      } else if (key === "\u001b") state.titleInput = null
+      else if (key === "\u007f" || key === "\b") state.titleInput = state.titleInput.slice(0, -1)
+      else if (key.length === 1 && key >= " ") state.titleInput += key
+      render(state)
+      return
+    }
     if (key === "q" || key === "\u0003") {
       state.running = false
       return
@@ -80,25 +78,48 @@ const program = Effect.gen(function* () {
     else if (key === "r") yield* Effect.promise(refresh)
     else if (key === "n") {
       if (!state.repositories.length) state.message = "Register a repository before creating tasks."
-      else {
-        const repositoryId = state.repositories[0].id
-        const title = (yield* ask(`\nNew task title (${state.repositories[0].name}): `)).trim()
-        if (title) {
-          yield* relay.CreateTask({ repositoryId, title, actor: "human" })
-          state.message = "Task created."
-          yield* Effect.promise(refresh)
-        }
-      }
+      else state.titleInput = ""
     } else if (key === "b" || key === "\u001b") state.view = "board"
     render(state)
   })
-  function onKey(data: Buffer) {
-    const key = data.toString()
+  const onKey = (key: string) => {
     Effect.runPromise(handleKey(key)).catch(error => {
       state.message = error instanceof Error ? error.message : String(error)
       render(state)
     })
   }
+  const reader = Bun.stdin.stream().getReader()
+  void (async () => {
+    const decoder = new TextDecoder()
+    let pending = ""
+    try {
+      while (state.running) {
+        const { value, done } = await reader.read()
+        if (done) break
+        pending += decoder.decode(value, { stream: true })
+        while (pending.length) {
+          if (pending.startsWith("\u001b")) {
+            if (pending.length < 3) break
+            const sequence = pending.slice(0, 3)
+            if (sequence === "\u001b[A" || sequence === "\u001b[B") {
+              onKey(sequence)
+              pending = pending.slice(3)
+              continue
+            }
+            onKey("\u001b")
+            pending = pending.slice(1)
+            continue
+          }
+          const [character] = Array.from(pending)
+          onKey(character)
+          pending = pending.slice(character.length)
+        }
+      }
+    } catch (error) {
+      state.message = error instanceof Error ? error.message : String(error)
+      render(state)
+    }
+  })()
 
   while (state.running) {
     yield* Effect.promise<void>(() => new Promise(resolve => {

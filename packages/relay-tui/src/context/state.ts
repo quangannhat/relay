@@ -10,6 +10,7 @@ export type AppState = {
   message: string
   loading: boolean
   running: boolean
+  titleInput: string | null
 }
 
 export const createState = (): AppState => ({
@@ -20,5 +21,6 @@ export const createState = (): AppState => ({
   selected: 0,
   message: "Connecting to Relay daemon…",
   loading: true,
-  running: true
+  running: true,
+  titleInput: null
 })

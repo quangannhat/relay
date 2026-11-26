@@ -44,6 +44,11 @@ export const render = (state: AppState) => {
     }
   }
   console.log(`\n${dim(rule)}`)
-  console.log(`  ${state.message || (state.loading ? "Refreshing…" : "Connected")}`)
-  console.log(dim("  ↑/↓ navigate   enter details   n new task   e events   r refresh   q quit"))
+  if (state.titleInput !== null) {
+    console.log(`  New task title: ${state.titleInput}█`)
+    console.log(dim("  Enter create   Esc cancel"))
+  } else {
+    console.log(`  ${state.message || (state.loading ? "Refreshing…" : "Connected")}`)
+    console.log(dim("  ↑/↓ navigate   enter details   n new task   e events   r refresh   q quit"))
+  }
 }
