@@ -1,18 +1,42 @@
 import { expect, it } from "bun:test"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
+import { spawn } from "node:child_process"
+import { existsSync, rmSync } from "node:fs"
+import { join } from "node:path"
 
 it("interoperates with the official MCP TypeScript client over stdio", async () => {
+  const directory = join(process.cwd(), `.relay-mcp-daemon-${crypto.randomUUID()}`)
+  const databasePath = join(directory, "relay.db")
+  const socketPath = join(directory, "relay.sock")
+  const daemon = spawn(process.execPath, ["packages/relay-daemon/src/main.ts"], {
+    cwd: process.cwd(),
+    env: { ...process.env, RELAY_DB: databasePath, RELAY_SOCKET: socketPath },
+    stdio: ["ignore", "ignore", "ignore"]
+  })
+  const daemonStopped = new Promise<void>(resolve => daemon.once("exit", () => resolve()))
+  const waitForSocket = async () => {
+    for (let attempt = 0; attempt < 100 && !existsSync(socketPath); attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 25))
+    }
+    if (!existsSync(socketPath)) throw new Error("Relay daemon socket did not appear")
+  }
+
   const client = new Client({ name: "relay-mcp-integration-test", version: "0.1.0" })
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: ["packages/relay-mcp/src/main.ts"],
     cwd: process.cwd(),
-    env: { ...(process.env as Record<string, string>), RELAY_DB: ":memory:" },
+    env: {
+      ...(process.env as Record<string, string>),
+      RELAY_DB: databasePath,
+      RELAY_SOCKET: socketPath
+    },
     stderr: "inherit"
   })
 
   try {
+    await waitForSocket()
     await client.connect(transport)
     const { tools } = await client.listTools()
     expect(tools.map(tool => tool.name)).toContain("wait_for_event")
@@ -62,6 +86,14 @@ it("interoperates with the official MCP TypeScript client over stdio", async () 
     const failedClaim = await call("claim_task", { taskId: "T-missing", actor: "agent-x" })
     expect(failedClaim.isError).toBe(true)
   } finally {
-    await client.close()
+    try { await client.close() } finally {
+      daemon.kill("SIGTERM")
+      await daemonStopped
+      rmSync(databasePath, { force: true })
+      rmSync(`${databasePath}-wal`, { force: true })
+      rmSync(`${databasePath}-shm`, { force: true })
+      rmSync(socketPath, { force: true })
+      rmSync(directory, { recursive: true, force: true })
+    }
   }
 }, 15_000)

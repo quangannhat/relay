@@ -7,7 +7,8 @@
         "command": [
           "bun",
           "packages/relay-mcp/src/main.ts"
-        ]
+        ],
+        "cwd": "."
       }
     }
   }

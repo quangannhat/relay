@@ -1,0 +1,21 @@
+{
+  "name": "relay-daemon",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/rpc.js",
+    "./client": "./src/client.js",
+    "./socket": "./src/socket.js"
+  },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "start": "bun run src/main.ts"
+  },
+  "dependencies": {
+    "@effect/rpc": "^0.76.4",
+    "@effect/platform-node": "^0.108.0",
+    "effect": "^3.22.5",
+    "relay-core": "workspace:*"
+  }
+}

@@ -8,7 +8,8 @@ this note records the current repository state and the next bounded work.
 
 ## Current state
 
-- Bun/TypeScript monorepo with `relay-core` and a minimal `relay-tui`.
+- Bun/TypeScript monorepo with `relay-core`, `relay-daemon`, `relay-mcp`, and
+  `relay-tui`.
 - Effect 3 is used for domain schemas, services, Layers, PubSub, queues, and
   scoped lifetimes. The lockfile resolves Effect 3.22.5.
 - Persistence currently uses Bun's built-in `bun:sqlite`, not Effect SQL.
@@ -21,6 +22,10 @@ this note records the current repository state and the next bounded work.
     delivery.
   - `packages/relay-core/src/main.ts`: simulated-agent demo.
   - `packages/relay-core/test/engine.test.ts`: behavior tests.
+  - `packages/relay-daemon/src/rpc.ts`: typed Effect RPC contract.
+  - `packages/relay-daemon/src/server.ts`: Unix socket RPC server, SQLite owner.
+  - `packages/relay-daemon/src/client.ts`: scoped RPC client layer.
+  - `packages/relay-daemon/src/main.ts`: independently runnable daemon.
 - `README.md` has the quick-start commands and architecture summary.
 
 ## Completed
@@ -41,8 +46,8 @@ this note records the current repository state and the next bounded work.
 - Completing a task and unblocking all newly-ready dependents now runs in a
   single transaction. A stale revision in any dependent rolls the whole
   operation back; live notifications are sent only after commit.
-- Last verification: `bun test` (11 passing, including an MCP stdio integration
-  flow) and `bun run build` (all packages pass).
+- Last verification: `bun test` (12 passing, including daemon and MCP
+  integration flows) and `bun run build` (all packages pass).
 
 ## MCP integration test
 
@@ -56,20 +61,35 @@ this note records the current repository state and the next bounded work.
   `structuredContent`; list and wait tools now return object envelopes.
 - `@modelcontextprotocol/sdk` is a test-only dependency. The production
   adapter remains on Effect MCP.
-- Last verification after the client round trip: `bun test` (11 passing) and
+- Last verification after the client round trip: `bun test` (12 passing) and
   `bun run build` (all packages pass).
 - OpenCode v2.3.2 connected to the project-configured local server and
   discovered all 12 tools. Host calls to `list_tasks`, `get_events`, and a
   1-second bounded `wait_for_event` succeeded (`{ event: null }` on timeout).
   `opencode.json` keeps this project-local configuration.
 
+## Phase 4: daemon and local RPC
+
+- Uses `@effect/rpc` 0.76.4 with Effect 3.22.5 and
+  `@effect/platform-node` 0.108.0. Unix domain sockets carry NDJSON RPC.
+- `bun run daemon` starts a daemon that owns the SQLite connection and core
+  `Coordination` service. `RELAY_DB` and `RELAY_SOCKET` configure its database
+  and socket; clients must use matching environment values.
+- MCP and TUI are now RPC clients; they do not open SQLite themselves.
+- `packages/relay-daemon/test/daemon.test.ts` checks real socket RPC, typed
+  domain errors, task lifecycle/events, daemon shutdown/restart, and durable
+  recovery through a new client.
+- OpenCode's configured MCP client was tested against the daemon-backed
+  server: tools connected, read-only calls worked, and bounded event waiting
+  returned its timeout result.
+
 ## Next steps
 
-1. Phase 4: investigate Effect RPC 0.x and platform socket support, then
-   define a small local RPC contract over the existing coordination services.
-   Keep MCP on the same application boundary; do not duplicate business logic.
-2. Add daemon startup/shutdown and reconnect tests before routing MCP through
-   the daemon. TUI should remain a separate client.
+1. Phase 5: improve the TUI from its current browse/create CLI into the
+   keyboard-driven view, including details, ownership/dependencies, event
+   stream, and live refresh over the RPC boundary.
+2. Test reconnect behavior with an already-running RPC client across daemon
+   restart, and handle stale socket files with a safe active-daemon check.
 3. Consider decisions and extra task operations only when actual workflows
    require them; the current task model does not have decisions.
 
@@ -80,6 +100,7 @@ bun install --frozen-lockfile
 bun test
 bun run build
 bun run core
+bun run daemon
 bun run mcp
 ```
 
@@ -92,6 +113,10 @@ SQLite except for the explicit restart/recovery test.
   with the repository's Effect 3.22.5. This keeps protocol and stdio
   lifecycle in Effect rather than adding a separate MCP runtime.
 - `bun run mcp` serves stdio and honors `RELAY_DB`.
+- `bun run daemon` is a separate process. Start it before MCP or TUI; local
+  clients connect to its Unix socket. Socket path defaults are derived from
+  the resolved database path, so a custom database and socket configuration
+  must match across processes.
 - Effect MCP v3 in this package currently returns `notImplemented` for
   `resources/subscribe` and `resources/unsubscribe`. Relay therefore exposes
   `wait_for_event` with a 30-second default / 5-minute maximum; cancellation

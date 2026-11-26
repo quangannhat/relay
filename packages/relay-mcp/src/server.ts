@@ -1,7 +1,7 @@
 import { McpServer, Tool, Toolkit } from "@effect/ai"
-import { Effect, Layer, Option, Queue, Schema } from "effect"
-import { Coordination, CoordinationLive } from "relay-core/engine"
-import { StoreLive } from "relay-core"
+import { Effect, Layer, Schema } from "effect"
+import { RelayRpcClient, RelayRpcClientLive } from "relay-daemon/client"
+import { relaySocketPath } from "relay-daemon/socket"
 import type { EventType, TaskId, TaskPriority, TaskStatus } from "relay-core/domain"
 
 const TaskIdSchema = Schema.String
@@ -98,7 +98,7 @@ export const RelayToolkit = Toolkit.make(
 )
 
 const handlers = RelayToolkit.toLayer(Effect.gen(function* () {
-  const relay = yield* Coordination
+  const relay = yield* RelayRpcClient
   const safely = <A, E>(effect: Effect.Effect<A, E>) =>
     effect.pipe(Effect.mapError(error => ({
       message: error instanceof Error && Object.keys(error).length === 0
@@ -106,10 +106,10 @@ const handlers = RelayToolkit.toLayer(Effect.gen(function* () {
         : JSON.stringify(error)
     })))
   return {
-  register_repository: ({ name, paths }) => safely(relay.registerRepository(name, paths)),
-  list_repositories: () => safely(relay.listRepositories().pipe(Effect.map(repositories => ({ repositories })))),
+  register_repository: ({ name, paths }) => safely(relay.RegisterRepository({ name, paths })),
+  list_repositories: () => safely(relay.ListRepositories(undefined).pipe(Effect.map(repositories => ({ repositories })))),
   list_tasks: ({ repositoryId, status }) => safely(
-    relay.listTasks().pipe(Effect.map(tasks => ({
+    relay.ListTasks(undefined).pipe(Effect.map(tasks => ({
       tasks: tasks
         .filter(task => !repositoryId || task.repositoryId === repositoryId)
         .filter(task => !status || task.status === status)
@@ -117,33 +117,32 @@ const handlers = RelayToolkit.toLayer(Effect.gen(function* () {
           ({ id, repositoryId, title, status, priority, assignee, updatedAt }))
     })))
   ),
-  get_task: ({ taskId }) => safely(relay.getTask(taskId as TaskId)),
-  create_task: ({ repositoryId, title, description, priority, dependencies, actor }) => safely(relay.createTask({
+  get_task: ({ taskId }) => safely(relay.GetTask({ taskId: taskId as TaskId })),
+  create_task: ({ repositoryId, title, description, priority, dependencies, actor }) => safely(relay.CreateTask({
       repositoryId, title, description,
       priority: priority as TaskPriority | undefined,
-      dependencies: dependencies as ReadonlyArray<TaskId> | undefined
-    }, actor)),
-  claim_task: ({ taskId, actor }) => safely(relay.claimTask(taskId as TaskId, actor)),
-  update_task: ({ taskId, status, title, description, actor }) => safely(relay.updateTask(taskId as TaskId, {
-      status: status as TaskStatus | undefined, title, description
-    }, actor)),
-  report_progress: ({ taskId, message, actor }) => safely(relay.reportProgress(taskId as TaskId, message, actor)),
-  publish_artifact: ({ taskId, artifact, actor }) => safely(relay.publishArtifact(taskId as TaskId, artifact, actor)),
-  complete_task: ({ taskId, actor }) => safely(relay.completeTask(taskId as TaskId, actor)),
-  get_events: ({ afterId }) => safely(relay.getEvents(afterId).pipe(Effect.map(events => ({ events })))),
-  wait_for_event: ({ taskId, types, timeoutMs }) => safely(Effect.scoped(Effect.gen(function* () {
-      const queue = yield* relay.subscribe(taskId as TaskId, types as ReadonlyArray<EventType> | undefined)
-      const event = yield* Effect.map(
-        Effect.timeoutOption(Queue.take(queue), timeoutMs ?? 30_000),
-        Option.getOrNull
-      )
-      return { event }
-    })))
+      dependencies: dependencies as ReadonlyArray<TaskId> | undefined,
+      actor
+    })),
+  claim_task: ({ taskId, actor }) => safely(relay.ClaimTask({ taskId: taskId as TaskId, actor })),
+  update_task: ({ taskId, status, title, description, actor }) => safely(relay.UpdateTask({
+      taskId: taskId as TaskId, status: status as TaskStatus | undefined, title, description, actor
+    })),
+  report_progress: ({ taskId, message, actor }) => safely(relay.ReportProgress({ taskId: taskId as TaskId, message, actor })),
+  publish_artifact: ({ taskId, artifact, actor }) => safely(relay.PublishArtifact({ taskId: taskId as TaskId, artifact, actor })),
+  complete_task: ({ taskId, actor }) => safely(relay.CompleteTask({ taskId: taskId as TaskId, actor })),
+  get_events: ({ afterId }) => safely(relay.GetEvents({ afterId }).pipe(Effect.map(events => ({ events })))),
+  wait_for_event: ({ taskId, types, timeoutMs }) => safely(
+    relay.WaitForEvent({
+      taskId: taskId as TaskId,
+      types: types as ReadonlyArray<EventType> | undefined,
+      timeoutMs: timeoutMs ?? 30_000
+    }).pipe(Effect.map(event => ({ event })))
+  )
   }
 }))
 
 export const RelayMcpLayer = McpServer.toolkit(RelayToolkit).pipe(
   Layer.provide(handlers),
-  Layer.provide(CoordinationLive),
-  Layer.provide(StoreLive(process.env.RELAY_DB ?? "relay.db"))
+  Layer.provide(RelayRpcClientLive(relaySocketPath()))
 )

@@ -1,6 +1,8 @@
 import { Effect } from "effect"
 import { createInterface } from "node:readline/promises"
-import { Coordination, CoordinationLive, StoreLive } from "relay-core"
+import { RelayRpcClient, RelayRpcClientLive } from "relay-daemon/client"
+import { relaySocketPath } from "relay-daemon/socket"
+import type { TaskId } from "relay-core/domain"
 
 const render = (repositories: ReadonlyArray<any>, tasks: ReadonlyArray<any>) => {
   console.clear()
@@ -20,7 +22,7 @@ const render = (repositories: ReadonlyArray<any>, tasks: ReadonlyArray<any>) => 
 }
 
 const program = Effect.gen(function* () {
-  const relay = yield* Coordination
+  const relay = yield* RelayRpcClient
   const input = yield* Effect.acquireRelease(
     Effect.sync(() => createInterface({ input: process.stdin, output: process.stdout })),
     readline => Effect.sync(() => readline.close())
@@ -28,7 +30,7 @@ const program = Effect.gen(function* () {
   let running = true
 
   while (running) {
-    render(yield* relay.listRepositories(), yield* relay.listTasks())
+    render(yield* relay.ListRepositories(undefined), yield* relay.ListTasks(undefined))
     const command = (yield* Effect.promise(() => input.question("> "))).trim()
     const [verb, ...args] = command.split(" ")
 
@@ -37,7 +39,7 @@ const program = Effect.gen(function* () {
     } else if (verb === "r" || verb === "") {
       continue
     } else if (verb === "e") {
-      const events = yield* relay.getEvents()
+      const events = yield* relay.GetEvents({})
       console.clear()
       console.log("EVENTS\n")
       for (const event of events.slice(-30)) {
@@ -45,7 +47,7 @@ const program = Effect.gen(function* () {
       }
       yield* Effect.promise(() => input.question("\nPress Enter to return"))
     } else if (verb === "d" && args[0]) {
-      const task = yield* relay.getTask(args[0] as any)
+      const task = yield* relay.GetTask({ taskId: args[0] as TaskId })
       console.clear()
       console.log(`${task.id}: ${task.title}\n`)
       console.log(task.description || "(no description)")
@@ -61,7 +63,7 @@ const program = Effect.gen(function* () {
     } else if (verb === "n") {
       const repositoryId = yield* Effect.promise(() => input.question("Repository ID: "))
       const title = yield* Effect.promise(() => input.question("Title: "))
-      yield* relay.createTask({ repositoryId, title }, "human")
+      yield* relay.CreateTask({ repositoryId, title, actor: "human" })
     } else {
       console.log("Unknown command")
       yield* Effect.promise(() => input.question("Press Enter to continue"))
@@ -71,8 +73,7 @@ const program = Effect.gen(function* () {
 
 Effect.runPromise(Effect.scoped(
   program.pipe(
-    Effect.provide(CoordinationLive),
-    Effect.provide(StoreLive("relay.db"))
+    Effect.provide(RelayRpcClientLive(relaySocketPath()))
   )
 )).catch(error => {
   console.error(error)

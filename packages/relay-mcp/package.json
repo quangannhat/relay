@@ -11,6 +11,7 @@
     "@effect/ai": "^0.37.0",
     "@effect/platform-node": "^0.108.0",
     "effect": "^3.22.5",
+    "relay-daemon": "workspace:*",
     "relay-core": "workspace:*"
   },
   "devDependencies": {
