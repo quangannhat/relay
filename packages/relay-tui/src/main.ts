@@ -41,7 +41,6 @@ const program = Effect.gen(function* () {
   yield* Effect.acquireRelease(
     Effect.sync(() => {
       process.stdin.setRawMode?.(true)
-      process.stdin.resume()
     }),
     () => Effect.sync(() => {
       clearInterval(timer)
