@@ -137,6 +137,11 @@ export const CATALOG_TASK = "List every service whose manifest status is active 
 
 export const relayTools = (...names: ReadonlyArray<string>) => names.map(name => `mcp__relay__${name}`)
 
+// relay-cli agents get Bash, but the session only allows `relay` commands, so they still cannot read files through it.
+export const CLI_SUBMIT = "Read files only with Read, Grep and Glob; Bash is only for the relay command. Hand the catalog off with exactly one Bash call: relay done --new \"Service catalog\" - <<'EOF' " +
+  "followed by the complete catalog and a final EOF line. It prints \"<taskId> completed\"."
+export const CLI_READ = "You will be given a Relay task id: read the catalog with exactly one Bash call, relay show <taskId> --result."
+
 // Agents reply with JSON after a label; take the last labelled line, tolerating trailing code fences.
 export const labelledJson = (text: string, label: string): unknown => {
   const line = text.split("\n").reverse().find(candidate => candidate.includes(`${label}:`))

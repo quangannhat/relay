@@ -1,9 +1,13 @@
 import { createHash } from "node:crypto"
 import { lstatSync, rmSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { homedir, tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 
-export const relaySocketPath = (databasePath = process.env.RELAY_DB ?? "relay.db") =>
+// The default database is per user, not per working directory, so every client finds the same daemon wherever it starts.
+export const relayDatabasePath = () =>
+  process.env.RELAY_DB ?? join(process.env.XDG_DATA_HOME ?? join(homedir(), ".local/share"), "relay", "relay.db")
+
+export const relaySocketPath = (databasePath = relayDatabasePath()) =>
   process.env.RELAY_SOCKET ??
   join(
     process.env.XDG_RUNTIME_DIR ?? tmpdir(),

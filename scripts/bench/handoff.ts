@@ -1,6 +1,7 @@
 import type { Mode, Scenario } from "./scenario.js"
 import {
-  CATALOG_TASK, generateServices, labelledJson, portConflicts, relayTools, startupOrder, writeServices, type PortConflict
+  CATALOG_TASK, CLI_READ, CLI_SUBMIT, generateServices, labelledJson, portConflicts, relayTools, startupOrder, writeServices,
+  type PortConflict
 } from "./services.js"
 
 // Handoff: an investigator catalogs services from files, then a planner with no file access
@@ -19,7 +20,7 @@ const PLAN_TASK = "From the service catalog, compute (1) the startup order: a se
 
 export const handoff: Scenario<HandoffAnswer> = {
   name: "handoff",
-  modes: ["relay", "relay-lean", "direct"],
+  modes: ["relay", "relay-lean", "relay-cli", "direct"],
   setup: (directory, seed) => {
     const services = generateServices(seed)
     writeServices(directory, services)
@@ -66,6 +67,18 @@ export const handoff: Scenario<HandoffAnswer> = {
           `reply must be one line: ${ANSWER_FORMAT}`,
         tools: relayTools("get_task")
       }
+    },
+    "relay-cli": {
+      investigator: {
+        description: "Reads the service files and creates a Relay task containing the catalog.",
+        prompt: `${CATALOG_TASK} ${CLI_SUBMIT} Your final reply must be "done <taskId>".`,
+        tools: ["Read", "Grep", "Glob", "Bash"]
+      },
+      planner: {
+        description: "Reads a catalog from a Relay task and returns a startup order and port conflicts. Has no file access.",
+        prompt: `${PLAN_TASK} ${CLI_READ} Your final reply must be one line: ${ANSWER_FORMAT}`,
+        tools: ["Bash"]
+      }
     }
   })[mode],
   prompt: (mode: Mode, repositoryId: string) => ({
@@ -79,7 +92,11 @@ export const handoff: Scenario<HandoffAnswer> = {
     "relay-lean": "Coordinate two agents to plan service startup for this workspace. Do not read files or do the analysis yourself. " +
       `Create one Relay task for the service catalog in repository ${repositoryId}. Run the investigator agent with its ` +
       "task id, then run the planner agent with the same task id. Finally output the planner's result as your last " +
-      `line, exactly in the form ${ANSWER_FORMAT}`
+      `line, exactly in the form ${ANSWER_FORMAT}`,
+    "relay-cli": "Coordinate two agents to plan service startup for this workspace. Do not read files or do the analysis yourself. " +
+      "Run the investigator agent. It creates the catalog task with the relay command; extract the task id from its final " +
+      "reply, then run the planner agent with that task id. Finally output the planner's result as your last line, " +
+      `exactly in the form ${ANSWER_FORMAT}`
   })[mode],
   grade: (result, answer) => {
     try {

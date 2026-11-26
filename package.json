@@ -9,6 +9,8 @@
     "mcp": "bun run packages/relay-mcp/src/main.ts",
     "daemon": "bun run packages/relay-daemon/src/main.ts",
     "tui": "bun run --filter relay-tui start",
+    "compile": "bun build --compile packages/relay-cli/src/main.ts --outfile dist/relay",
+    "install:binary": "bun run compile && bun run scripts/install-binary.ts",
     "bench": "bun run scripts/bench/run.ts",
     "test": "bun test"
   },

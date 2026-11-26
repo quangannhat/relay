@@ -1,5 +1,5 @@
 import { Effect, Schedule } from "effect"
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { parseArgs } from "node:util"
@@ -82,9 +82,10 @@ const runOnce = async (mode: Mode, run: number): Promise<RunResult> => {
     : undefined
   try {
     const repositoryId = daemon ? await registerRepository(socketPath, workspace) : ""
+    const cli = mode === "relay-cli"
     const mcpConfig = join(control, "mcp.json")
     writeFileSync(mcpConfig, JSON.stringify({
-      mcpServers: daemon
+      mcpServers: daemon && !cli
         ? { relay: { type: "stdio", command: relayBin, args: ["mcp"], env: { RELAY_SOCKET: socketPath, RELAY_DB: databasePath } } }
         : {}
     }))
@@ -93,14 +94,23 @@ const runOnce = async (mode: Mode, run: number): Promise<RunResult> => {
     const sessionId = crypto.randomUUID()
     // Subagents can only use built-in tools that the session has, so the orchestrator keeps the file
     // tools; whether it used them itself is recorded from its transcript instead.
-    const builtinTools = ["Agent", "Read", "Grep", "Glob"]
-    const allowed = [...builtinTools, ...(daemon ? ["mcp__relay"] : [])]
+    const builtinTools = ["Agent", "Read", "Grep", "Glob", ...(cli ? ["Bash"] : [])]
+    const allowed = [...builtinTools.filter(tool => tool !== "Bash"), ...(cli ? ["Bash(relay *)"] : daemon ? ["mcp__relay"] : [])]
+    // The relay command must resolve to the benchmarked binary and reach this run's daemon.
+    const binDirectory = join(control, "bin")
+    if (cli) {
+      mkdirSync(binDirectory)
+      symlinkSync(resolve(relayBin), join(binDirectory, "relay"))
+    }
     const child = Bun.spawn([
       "claude", "-p", scenario.prompt(mode, repositoryId),
       "--model", options.model!, "--output-format", "json", "--session-id", sessionId,
       "--restricted", "--strict-mcp-config", "--mcp-config", mcpConfig, "--agents", agentsFile,
       "--tools", builtinTools.join(","), "--allowedTools", allowed.join(",")
-    ], { cwd: workspace, stdout: "pipe", stderr: "pipe" })
+    ], {
+      cwd: workspace, stdout: "pipe", stderr: "pipe",
+      env: cli ? { ...Bun.env, PATH: `${binDirectory}:${Bun.env.PATH}`, RELAY_SOCKET: socketPath, RELAY_DB: databasePath } : Bun.env
+    })
     // The CLI's duration_ms leaves out background subagents, so time the whole session from outside.
     const started = Date.now()
     const timer = setTimeout(() => child.kill(), Number(options["timeout-minutes"]) * 60_000)

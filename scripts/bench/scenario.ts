@@ -1,6 +1,7 @@
 // relay: every payload goes through Relay tasks. relay-lean: only the bulky intermediate payload goes
-// through Relay, with submit_result, and small final answers come back in agent replies.
-export type Mode = "relay" | "relay-lean" | "direct"
+// through Relay, with submit_result, and small final answers come back in agent replies. relay-cli: relay-lean
+// through the relay command in Bash instead of MCP tools.
+export type Mode = "relay" | "relay-lean" | "relay-cli" | "direct"
 
 export interface AgentDefinition {
   readonly description: string

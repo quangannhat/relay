@@ -2,10 +2,10 @@ import { NodeRuntime } from "@effect/platform-node"
 import { Effect, Layer } from "effect"
 import { mkdirSync } from "node:fs"
 import { dirname } from "node:path"
-import { isRelayDaemonRunning, relaySocketPath, removeStaleRelaySocket } from "./socket.js"
+import { isRelayDaemonRunning, relayDatabasePath, relaySocketPath, removeStaleRelaySocket } from "./socket.js"
 import { RelayRpcServerLive } from "./server.js"
 
-const databasePath = process.env.RELAY_DB ?? "relay.db"
+const databasePath = relayDatabasePath()
 const socketPath = relaySocketPath(databasePath)
 
 if (await isRelayDaemonRunning(socketPath)) {
@@ -14,6 +14,7 @@ if (await isRelayDaemonRunning(socketPath)) {
 }
 
 mkdirSync(dirname(socketPath), { recursive: true })
+mkdirSync(dirname(databasePath), { recursive: true })
 removeStaleRelaySocket(socketPath)
 process.umask(process.umask() | 0o077)
 
