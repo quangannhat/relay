@@ -17,8 +17,9 @@ The TUI refreshes repositories, tasks, and events every three seconds. Set
 `RELAY_DB` and `RELAY_SOCKET` consistently for both daemon and TUI when using
 non-default locations.
 
-Keyboard input is read from `Bun.stdin.stream()`; raw terminal mode is enabled
-only while the TUI is active so single-key navigation works without Enter.
+Keyboard input uses Bun's `process.stdin` terminal events in raw mode, so
+single-key navigation works without Enter. No Node modules or readline layer
+are used.
 
 ## Structure
 

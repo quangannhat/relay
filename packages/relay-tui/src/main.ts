@@ -38,17 +38,6 @@ const program = Effect.gen(function* () {
   render(state)
   void refresh()
   const timer = setInterval(() => void refresh(), 3000)
-  yield* Effect.acquireRelease(
-    Effect.sync(() => {
-      process.stdin.setRawMode?.(true)
-    }),
-    () => Effect.sync(() => {
-      clearInterval(timer)
-      if (process.stdin.isTTY) process.stdin.setRawMode(false)
-      process.stdout.write("\u001b[?25h")
-    })
-  )
-  process.stdout.write("\u001b[?25l")
 
   const handleKey = (key: string) => Effect.gen(function* () {
     if (state.titleInput !== null) {
@@ -87,38 +76,42 @@ const program = Effect.gen(function* () {
       render(state)
     })
   }
-  const reader = Bun.stdin.stream().getReader()
-  void (async () => {
-    const decoder = new TextDecoder()
-    let pending = ""
-    try {
-      while (state.running) {
-        const { value, done } = await reader.read()
-        if (done) break
-        pending += decoder.decode(value, { stream: true })
-        while (pending.length) {
-          if (pending.startsWith("\u001b")) {
-            if (pending.length < 3) break
-            const sequence = pending.slice(0, 3)
-            if (sequence === "\u001b[A" || sequence === "\u001b[B") {
-              onKey(sequence)
-              pending = pending.slice(3)
-              continue
-            }
-            onKey("\u001b")
-            pending = pending.slice(1)
-            continue
-          }
-          const [character] = Array.from(pending)
-          onKey(character)
-          pending = pending.slice(character.length)
+  let pending = ""
+  const decoder = new TextDecoder()
+  const onData = (data: Uint8Array) => {
+    pending += decoder.decode(data, { stream: true })
+    while (pending.length) {
+      if (pending.startsWith("\u001b")) {
+        if (pending.length < 3) break
+        const sequence = pending.slice(0, 3)
+        if (sequence === "\u001b[A" || sequence === "\u001b[B") {
+          onKey(sequence)
+          pending = pending.slice(3)
+          continue
         }
+        onKey("\u001b")
+        pending = pending.slice(1)
+        continue
       }
-    } catch (error) {
-      state.message = error instanceof Error ? error.message : String(error)
-      render(state)
+      const [character] = Array.from(pending)
+      onKey(character)
+      pending = pending.slice(character.length)
     }
-  })()
+  }
+  yield* Effect.acquireRelease(
+    Effect.sync(() => {
+      process.stdin.setRawMode?.(true)
+      process.stdin.on("data", onData)
+      process.stdin.resume()
+    }),
+    () => Effect.sync(() => {
+      clearInterval(timer)
+      process.stdin.off("data", onData)
+      if (process.stdin.isTTY) process.stdin.setRawMode(false)
+      process.stdout.write("\u001b[?25h")
+    })
+  )
+  process.stdout.write("\u001b[?25l")
 
   while (state.running) {
     yield* Effect.promise<void>(() => new Promise(resolve => {
