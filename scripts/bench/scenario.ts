@@ -13,6 +13,7 @@ export interface AgentDefinition {
 // and replies, and in relay mode the payloads are expected to travel through Relay.
 export interface Scenario<Answer> {
   readonly name: string
+  readonly modes: ReadonlyArray<Mode>
   readonly setup: (directory: string, seed: number) => Answer
   readonly agents: (mode: Mode) => Record<string, AgentDefinition>
   readonly prompt: (mode: Mode, repositoryId: string) => string

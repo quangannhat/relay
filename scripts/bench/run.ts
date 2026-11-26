@@ -4,6 +4,7 @@ import { homedir, tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { parseArgs } from "node:util"
 import { RelayRpcClient, RelayRpcClientLive } from "../../packages/relay-daemon/src/client.js"
+import { fanout } from "./fanout.js"
 import { handoff } from "./handoff.js"
 import type { Mode, Scenario } from "./scenario.js"
 import { addUsage, emptyUsage, sessionUsage, totalTokens, type SessionUsage, type TokenUsage } from "./usage.js"
@@ -12,15 +13,16 @@ import { addUsage, emptyUsage, sessionUsage, totalTokens, type SessionUsage, typ
 // tokens every session actually used, read from the transcripts of the orchestrator and its subagents.
 //
 //   bun run scripts/bench/run.ts --scenario handoff --runs 5 --model sonnet
+//   bun run scripts/bench/run.ts --scenario fanout-40 --runs 3
 
-const scenarios: Record<string, Scenario<any>> = { handoff }
+const scenarios: Record<string, Scenario<any>> = { handoff, fanout: fanout(14), "fanout-40": fanout(40) }
 
 const { values: options } = parseArgs({
   options: {
     scenario: { type: "string", default: "handoff" },
     runs: { type: "string", default: "5" },
     model: { type: "string", default: "sonnet" },
-    modes: { type: "string", default: "relay,relay-lean,direct" },
+    modes: { type: "string" },
     seed: { type: "string", default: "1" },
     out: { type: "string", default: "bench-results" },
     "timeout-minutes": { type: "string", default: "10" }
@@ -29,7 +31,9 @@ const { values: options } = parseArgs({
 
 const scenario = scenarios[options.scenario!]
 if (!scenario) throw new Error(`unknown scenario ${options.scenario}; known: ${Object.keys(scenarios).join(", ")}`)
-const modes = options.modes!.split(",") as Array<Mode>
+const modes = options.modes ? options.modes.split(",") as Array<Mode> : [...scenario.modes]
+const unsupported = modes.filter(mode => !scenario.modes.includes(mode))
+if (unsupported.length) throw new Error(`${scenario.name} does not support modes: ${unsupported.join(", ")}`)
 const runs = Number(options.runs)
 const relayBin = Bun.env.RELAY_BIN ?? join(homedir(), ".local/bin/relay")
 const projectsDirectory = join(homedir(), ".claude/projects")
@@ -97,9 +101,12 @@ const runOnce = async (mode: Mode, run: number): Promise<RunResult> => {
       "--restricted", "--strict-mcp-config", "--mcp-config", mcpConfig, "--agents", agentsFile,
       "--tools", builtinTools.join(","), "--allowedTools", allowed.join(",")
     ], { cwd: workspace, stdout: "pipe", stderr: "pipe" })
+    // The CLI's duration_ms leaves out background subagents, so time the whole session from outside.
+    const started = Date.now()
     const timer = setTimeout(() => child.kill(), Number(options["timeout-minutes"]) * 60_000)
     const [stdout, stderr] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()])
     await child.exited
+    const durationMs = Date.now() - started
     clearTimeout(timer)
     let output: any
     try {
@@ -117,7 +124,7 @@ const runOnce = async (mode: Mode, run: number): Promise<RunResult> => {
     return {
       mode, run, seed, sessionId, ...grade,
       costUsd: output.total_cost_usd ?? 0,
-      durationMs: output.duration_ms ?? 0,
+      durationMs,
       turns: output.num_turns ?? 0,
       subagentsSpawned: output.subagent_stats?.spawned ?? 0,
       permissionDenials: output.permission_denials?.length ?? 0,
