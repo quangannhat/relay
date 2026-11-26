@@ -1,5 +1,5 @@
 import { expect, it } from "bun:test"
-import { Effect, Schedule, Stream } from "effect"
+import { Effect, Fiber, Schedule, Stream } from "effect"
 import { spawn } from "node:child_process"
 import { existsSync, rmSync } from "node:fs"
 import { join } from "node:path"
@@ -134,6 +134,42 @@ it("replaces a stale socket left behind by a killed daemon", async () => {
   } finally {
     if (daemon && daemon.exitCode === null) {
       const stopped = new Promise<void>(resolve => daemon!.once("exit", () => resolve()))
+      daemon.kill("SIGTERM")
+      await stopped
+    }
+    rmSync(directory, { recursive: true, force: true })
+  }
+}, 20_000)
+
+it("delivers a status-only update to a waiter sharing the client connection", async () => {
+  const directory = join(process.cwd(), `.relay-daemon-${crypto.randomUUID()}`)
+  const socketPath = join(directory, "relay.sock")
+  const databasePath = join(directory, "relay.db")
+  const daemon = spawn(process.execPath, ["packages/relay-daemon/src/main.ts"], {
+    cwd: process.cwd(),
+    env: { ...process.env, RELAY_SOCKET: socketPath, RELAY_DB: databasePath },
+    stdio: ["ignore", "ignore", "ignore"]
+  })
+  try {
+    const result = await withClient(socketPath, Effect.gen(function* () {
+      const relay = yield* RelayRpcClient
+      const repository = yield* relay.RegisterRepository({ name: "wait-test", paths: [] }).pipe(Effect.retry({
+        schedule: Schedule.spaced("100 millis").pipe(Schedule.compose(Schedule.recurs(30)))
+      }))
+      const task = yield* relay.CreateTask({ repositoryId: repository.id, title: "Status only", actor: "agent-a" })
+      const waiter = yield* Effect.fork(relay.WaitForEvent({ taskId: task.id, types: ["TaskUpdated"], timeoutMs: 5_000 }))
+      yield* Effect.sleep("200 millis")
+      const updated = yield* relay.UpdateTask({ taskId: task.id, status: "in_progress", actor: "agent-b" })
+      const event = yield* Fiber.join(waiter)
+      return { updated, event }
+    }))
+    expect(result.updated.status).toBe("in_progress")
+    expect(result.updated.title).toBe("Status only")
+    expect(result.event?.type).toBe("TaskUpdated")
+    expect(result.event?.actor).toBe("agent-b")
+  } finally {
+    if (daemon.exitCode === null) {
+      const stopped = new Promise<void>(resolve => daemon.once("exit", () => resolve()))
       daemon.kill("SIGTERM")
       await stopped
     }

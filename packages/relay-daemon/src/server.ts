@@ -54,7 +54,8 @@ const handlers = RelayRpc.toLayer(Effect.gen(function* () {
 }))
 
 export const RelayRpcServerLive = (socketPath: string, database = "relay.db") =>
-  RpcServer.layer(RelayRpc).pipe(
+  // A handler defect must fail only its own request, not every in-flight request on the shared client connection.
+  RpcServer.layer(RelayRpc, { disableFatalDefects: true }).pipe(
     Layer.provide(handlers),
     Layer.provide(CoordinationLive),
     Layer.provide(StoreLive(database)),

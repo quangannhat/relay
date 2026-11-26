@@ -106,8 +106,10 @@ export const CoordinationLive = Layer.effect(
         if (patch.status && !canTransition(current.status, patch.status)) {
           return yield* Effect.fail(new InvalidTransition({ from: current.status, to: patch.status }))
         }
-        const updated = { ...current, ...patch, revision: current.revision + 1, updatedAt: Date.now() } as Task
-        return yield* save(updated, patch.status === "completed" ? "TaskCompleted" : "TaskUpdated", actor, patch, current.revision)
+        // RPC callers send omitted fields as explicit undefined; spreading those would erase the stored values.
+        const changes = Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined)) as typeof patch
+        const updated = { ...current, ...changes, revision: current.revision + 1, updatedAt: Date.now() } as Task
+        return yield* save(updated, changes.status === "completed" ? "TaskCompleted" : "TaskUpdated", actor, changes, current.revision)
       }),
       reportProgress: (id, message, actor) => Effect.gen(function* () {
         const current = yield* getTask(id)

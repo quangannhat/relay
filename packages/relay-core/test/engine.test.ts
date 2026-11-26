@@ -123,6 +123,18 @@ describe("Relay coordination engine", () => {
     expect(result._tag).toBe("Left")
   })
 
+  it("keeps fields that a patch leaves undefined", async () => {
+    const result = await withRelay(Effect.gen(function* () {
+      const relay = yield* Coordination
+      const repo = yield* relay.registerRepository("repo", [])
+      const task = yield* relay.createTask({ repositoryId: repo.id, title: "Keep title", description: "Keep description" })
+      return yield* relay.updateTask(task.id, { status: "in_progress", title: undefined, description: undefined }, "agent-a")
+    }))
+    expect(result.status).toBe("in_progress")
+    expect(result.title).toBe("Keep title")
+    expect(result.description).toBe("Keep description")
+  })
+
   it("blocks dependent tasks and unblocks them after completion", async () => {
     const result = await withRelay(Effect.gen(function* () {
       const relay = yield* Coordination
