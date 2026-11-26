@@ -41,16 +41,23 @@ this note records the current repository state and the next bounded work.
 - Completing a task and unblocking all newly-ready dependents now runs in a
   single transaction. A stale revision in any dependent rolls the whole
   operation back; live notifications are sent only after commit.
-- Last core verification: `bun test` (10 passing) and `bun run build` (all
-  packages pass).
+- Last verification: `bun test` (11 passing, including an MCP stdio integration
+  flow) and `bun run build` (all packages pass).
+
+## MCP integration test
+
+- `packages/relay-mcp/test/stdio.test.ts` launches the actual stdio server,
+  negotiates MCP, registers a repository, creates dependent tasks, claims a
+  task, waits only for completion while progress arrives, completes it,
+  verifies deterministic unblocking, and retrieves persisted events.
+- Tool errors are returned as MCP `isError` results with structured details.
+- Build and test coverage are automated; remaining step is trying an actual
+  supported coding-agent host/runtime.
 
 ## Next steps
 
-1. Harden MCP interoperability with a real coding-agent host and add automated
-   protocol-level tests. Tools currently cover repository registration,
-   compact task listing, details, creation, claiming, updates, progress,
-   artifact publication, completion, incremental events, and bounded event
-   waiting.
+1. Test the MCP stdio server with a real coding-agent host and confirm the
+   bounded wait call is handled as expected by that runtime.
 2. Consider decisions and additional domain operations only when actual MCP
    workflows require them; the current task model does not have decisions.
 3. Do not start daemon/RPC expansion until the core/MCP boundary is
