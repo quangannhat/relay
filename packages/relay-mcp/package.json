@@ -12,5 +12,8 @@
     "@effect/platform-node": "^0.108.0",
     "effect": "^3.22.5",
     "relay-core": "workspace:*"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2"
   }
 }

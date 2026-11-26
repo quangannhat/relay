@@ -47,12 +47,17 @@ this note records the current repository state and the next bounded work.
 ## MCP integration test
 
 - `packages/relay-mcp/test/stdio.test.ts` launches the actual stdio server,
-  negotiates MCP, registers a repository, creates dependent tasks, claims a
+  connects with the official `@modelcontextprotocol/sdk` 1.32.2 client,
+  discovers tools, registers a repository, creates dependent tasks, claims a
   task, waits only for completion while progress arrives, completes it,
   verifies deterministic unblocking, and retrieves persisted events.
 - Tool errors are returned as MCP `isError` results with structured details.
-- Build and test coverage are automated; remaining step is trying an actual
-  supported coding-agent host/runtime.
+- The official client exposed that top-level arrays/null are not valid
+  `structuredContent`; list and wait tools now return object envelopes.
+- `@modelcontextprotocol/sdk` is a test-only dependency. The production
+  adapter remains on Effect MCP.
+- Last verification after the client round trip: `bun test` (11 passing) and
+  `bun run build` (all packages pass).
 
 ## Next steps
 

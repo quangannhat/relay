@@ -107,12 +107,16 @@ const handlers = RelayToolkit.toLayer(Effect.gen(function* () {
     })))
   return {
   register_repository: ({ name, paths }) => safely(relay.registerRepository(name, paths)),
-  list_repositories: () => safely(relay.listRepositories()),
-  list_tasks: ({ repositoryId, status }) => safely(relay.listTasks().pipe(Effect.map(tasks => tasks
-      .filter(task => !repositoryId || task.repositoryId === repositoryId)
-      .filter(task => !status || task.status === status)
-      .map(({ id, repositoryId, title, status, priority, assignee, updatedAt }) =>
-        ({ id, repositoryId, title, status, priority, assignee, updatedAt }))))),
+  list_repositories: () => safely(relay.listRepositories().pipe(Effect.map(repositories => ({ repositories })))),
+  list_tasks: ({ repositoryId, status }) => safely(
+    relay.listTasks().pipe(Effect.map(tasks => ({
+      tasks: tasks
+        .filter(task => !repositoryId || task.repositoryId === repositoryId)
+        .filter(task => !status || task.status === status)
+        .map(({ id, repositoryId, title, status, priority, assignee, updatedAt }) =>
+          ({ id, repositoryId, title, status, priority, assignee, updatedAt }))
+    })))
+  ),
   get_task: ({ taskId }) => safely(relay.getTask(taskId as TaskId)),
   create_task: ({ repositoryId, title, description, priority, dependencies, actor }) => safely(relay.createTask({
       repositoryId, title, description,
@@ -126,13 +130,14 @@ const handlers = RelayToolkit.toLayer(Effect.gen(function* () {
   report_progress: ({ taskId, message, actor }) => safely(relay.reportProgress(taskId as TaskId, message, actor)),
   publish_artifact: ({ taskId, artifact, actor }) => safely(relay.publishArtifact(taskId as TaskId, artifact, actor)),
   complete_task: ({ taskId, actor }) => safely(relay.completeTask(taskId as TaskId, actor)),
-  get_events: ({ afterId }) => safely(relay.getEvents(afterId)),
+  get_events: ({ afterId }) => safely(relay.getEvents(afterId).pipe(Effect.map(events => ({ events })))),
   wait_for_event: ({ taskId, types, timeoutMs }) => safely(Effect.scoped(Effect.gen(function* () {
       const queue = yield* relay.subscribe(taskId as TaskId, types as ReadonlyArray<EventType> | undefined)
-      return yield* Effect.map(
+      const event = yield* Effect.map(
         Effect.timeoutOption(Queue.take(queue), timeoutMs ?? 30_000),
-        Option.match({ onNone: () => null, onSome: event => event })
+        Option.getOrNull
       )
+      return { event }
     })))
   }
 }))

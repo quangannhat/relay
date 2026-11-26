@@ -1,99 +1,67 @@
 import { expect, it } from "bun:test"
-import { spawn } from "node:child_process"
-import { createInterface } from "node:readline"
+import { Client } from "@modelcontextprotocol/sdk/client/index.js"
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 
-type RpcMessage = {
-  readonly id?: number
-  readonly result?: {
-    readonly tools?: ReadonlyArray<{ name: string }>
-    readonly content?: ReadonlyArray<{ text?: string }>
-    readonly structuredContent?: any
-    readonly isError?: boolean
-  }
-}
-
-it("serves the coordination workflow over MCP stdio", async () => {
-  const child = spawn(process.execPath, ["packages/relay-mcp/src/main.ts"], {
+it("interoperates with the official MCP TypeScript client over stdio", async () => {
+  const client = new Client({ name: "relay-mcp-integration-test", version: "0.1.0" })
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: ["packages/relay-mcp/src/main.ts"],
     cwd: process.cwd(),
-    env: { ...process.env, RELAY_DB: ":memory:" },
-    stdio: ["pipe", "pipe", "pipe"]
+    env: { ...(process.env as Record<string, string>), RELAY_DB: ":memory:" },
+    stderr: "inherit"
   })
-  const lines = createInterface({ input: child.stdout })
-  const pending = new Map<number, (message: RpcMessage) => void>()
-
-  lines.on("line", line => {
-    const message = JSON.parse(line) as RpcMessage
-    if (message.id === undefined) return
-    pending.get(message.id)?.(message)
-    pending.delete(message.id)
-  })
-  const response = (id: number): Promise<RpcMessage> =>
-    new Promise(resolve => pending.set(id, resolve))
-  const call = async (id: number, name: string, args: Record<string, unknown>) => {
-    const result = response(id)
-    child.stdin.write(`${JSON.stringify({
-      jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args }
-    })}\n`)
-    return (await result).result!
-  }
 
   try {
-    child.stdin.write(`${JSON.stringify({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "initialize",
-      params: {
-        protocolVersion: "2025-03-26",
-        capabilities: {},
-        clientInfo: { name: "relay-mcp-test", version: "0.1.0" }
-      }
-    })}\n`)
-    const initialized = await response(1)
-    expect(initialized.result).toBeDefined()
-    child.stdin.write('{"jsonrpc":"2.0","method":"notifications/initialized"}\n')
+    await client.connect(transport)
+    const { tools } = await client.listTools()
+    expect(tools.map(tool => tool.name)).toContain("wait_for_event")
 
-    const registered = await call(2, "register_repository", {
+    const call = (name: string, args: Record<string, unknown> = {}) =>
+      client.callTool({ name, arguments: args })
+    const registered = await call("register_repository", {
       name: "mcp-integration", paths: ["/tmp/mcp-integration"]
     })
-    const repositoryId = registered.structuredContent.id as string
+    const repositoryId = registered.structuredContent!.id as string
     expect(repositoryId).toMatch(/^R-/)
+    const repositories = await call("list_repositories")
+    expect((repositories.structuredContent!.repositories as Array<{ id: string }>)[0].id)
+      .toBe(repositoryId)
 
-    const first = await call(3, "create_task", {
+    const first = await call("create_task", {
       repositoryId, title: "Database interface", actor: "agent-a"
     })
-    const taskId = first.structuredContent.id as string
-    const second = await call(4, "create_task", {
+    const taskId = first.structuredContent!.id as string
+    const second = await call("create_task", {
       repositoryId, title: "API integration", dependencies: [taskId], actor: "agent-b"
     })
-    const dependentId = second.structuredContent.id as string
-    expect(second.structuredContent.status).toBe("blocked")
+    const dependentId = second.structuredContent!.id as string
+    expect(second.structuredContent!.status).toBe("blocked")
 
-    await call(5, "claim_task", { taskId, actor: "agent-a" })
+    await call("claim_task", { taskId, actor: "agent-a" })
 
-    // Hold a filtered wait open while progress and completion arrive.
-    const waiting = call(6, "wait_for_event", {
+    // Keep the MCP request blocked while irrelevant progress is published.
+    const waiting = call("wait_for_event", {
       taskId, types: ["TaskCompleted"], timeoutMs: 5000
     })
-    await call(7, "report_progress", {
+    await call("report_progress", {
       taskId, message: "Repository interface is ready", actor: "agent-a"
     })
-    await call(8, "complete_task", { taskId, actor: "agent-a" })
+    await call("complete_task", { taskId, actor: "agent-a" })
 
     const completion = await waiting
     expect(completion.isError).toBe(false)
-    expect(completion.structuredContent.type).toBe("TaskCompleted")
+    expect(completion.structuredContent!.event.type).toBe("TaskCompleted")
 
-    const dependent = await call(9, "get_task", { taskId: dependentId })
-    expect(dependent.structuredContent.status).toBe("pending")
-
-    const history = await call(10, "get_events", { afterId: 0 })
-    expect(history.structuredContent.map((event: { type: string }) => event.type))
+    const dependent = await call("get_task", { taskId: dependentId })
+    expect(dependent.structuredContent!.status).toBe("pending")
+    const history = await call("get_events", { afterId: 0 })
+    expect((history.structuredContent!.events as Array<{ type: string }>).map(event => event.type))
       .toContain("ProgressReported")
 
-    const failedClaim = await call(11, "claim_task", { taskId: "T-missing", actor: "agent-x" })
+    const failedClaim = await call("claim_task", { taskId: "T-missing", actor: "agent-x" })
     expect(failedClaim.isError).toBe(true)
   } finally {
-    lines.close()
-    child.kill()
+    await client.close()
   }
 }, 15_000)
