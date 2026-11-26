@@ -26,6 +26,9 @@ this note records the current repository state and the next bounded work.
   - `packages/relay-daemon/src/server.ts`: Unix socket RPC server, SQLite owner.
   - `packages/relay-daemon/src/client.ts`: scoped RPC client layer.
   - `packages/relay-daemon/src/main.ts`: independently runnable daemon.
+  - `packages/relay-tui/src/main.ts`: keyboard-driven RPC client.
+  - `packages/relay-tui/src/context/state.ts`: TUI app state.
+  - `packages/relay-tui/src/component/render.ts`: board/details/event rendering.
 - `README.md` has the quick-start commands and architecture summary.
 
 ## Completed
@@ -83,13 +86,24 @@ this note records the current repository state and the next bounded work.
   server: tools connected, read-only calls worked, and bounded event waiting
   returned its timeout result.
 
+## Phase 5: structured terminal client
+
+- Replaced the readline command loop with a raw-key, full-screen task board.
+- Followed OpenCode's app/context/component separation at Relay's smaller
+  scale: app lifecycle and input in `main.ts`, data/view state in
+  `context/state.ts`, and board/details/event rendering in `component/render.ts`.
+- Added task navigation, task details (including ownership, dependencies,
+  progress, and artifacts), a durable event stream, task creation, periodic
+  refresh, and terminal cleanup on exit.
+- The TUI is still intentionally dependency-light and consumes only daemon
+  RPC; it does not own SQLite or coordination logic.
+- Verification: `bun run build`, `bun test` (12 passing), and `git diff --check`.
+
 ## Next steps
 
-1. Phase 5: improve the TUI from its current browse/create CLI into the
-   keyboard-driven view, including details, ownership/dependencies, event
-   stream, and live refresh over the RPC boundary.
-2. Test reconnect behavior with an already-running RPC client across daemon
+1. Test reconnect behavior with an already-running RPC client across daemon
    restart, and handle stale socket files with a safe active-daemon check.
+2. Add status/priority filters and repository selection to the TUI.
 3. Consider decisions and extra task operations only when actual workflows
    require them; the current task model does not have decisions.
 
