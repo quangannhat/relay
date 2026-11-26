@@ -45,9 +45,10 @@ bun run mcp
 bun run tui
 ```
 
-Configure an MCP client to launch `bun run mcp` from this repository. Set
-`RELAY_DB` to override the default `relay.db` location. MCP stdio is the
-protocol channel; server logs go to stderr.
+The project includes an OpenCode MCP config in `opencode.json`; it launches
+the server directly with `bun` so stdout remains a clean protocol channel.
+Other clients can launch `bun run mcp`. Set `RELAY_DB` to override the default
+`relay.db` location. Server logs go to stderr.
 
 `bun run core` creates `relay.db`, registers a repository, runs a simulated
 claim/progress/completion flow, and demonstrates a filtered completion

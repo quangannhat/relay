@@ -58,15 +58,20 @@ this note records the current repository state and the next bounded work.
   adapter remains on Effect MCP.
 - Last verification after the client round trip: `bun test` (11 passing) and
   `bun run build` (all packages pass).
+- OpenCode v2.3.2 connected to the project-configured local server and
+  discovered all 12 tools. Host calls to `list_tasks`, `get_events`, and a
+  1-second bounded `wait_for_event` succeeded (`{ event: null }` on timeout).
+  `opencode.json` keeps this project-local configuration.
 
 ## Next steps
 
-1. Test the MCP stdio server with a real coding-agent host and confirm the
-   bounded wait call is handled as expected by that runtime.
-2. Consider decisions and additional domain operations only when actual MCP
-   workflows require them; the current task model does not have decisions.
-3. Do not start daemon/RPC expansion until the core/MCP boundary is
-   stable.
+1. Phase 4: investigate Effect RPC 0.x and platform socket support, then
+   define a small local RPC contract over the existing coordination services.
+   Keep MCP on the same application boundary; do not duplicate business logic.
+2. Add daemon startup/shutdown and reconnect tests before routing MCP through
+   the daemon. TUI should remain a separate client.
+3. Consider decisions and extra task operations only when actual workflows
+   require them; the current task model does not have decisions.
 
 ## Resume commands
 

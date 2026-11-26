@@ -1,0 +1,14 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "servers": {
+      "relay": {
+        "type": "local",
+        "command": [
+          "bun",
+          "packages/relay-mcp/src/main.ts"
+        ]
+      }
+    }
+  }
+}
