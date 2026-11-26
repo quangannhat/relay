@@ -46,6 +46,8 @@ it("accepts a quit key in an interactive Bun pseudo-terminal", async () => {
     expect(tui.exitCode).toBe(0)
     expect(output).toContain("TASK BOARD")
     expect(output).toContain("Shutting down")
+    const interactiveOutput = output.slice(output.indexOf("\u001b[?25l"))
+    expect(interactiveOutput).toContain("\r\n")
   } finally {
     if (tui.exitCode === null) tui.kill("SIGTERM")
     if (daemon.exitCode === null) {

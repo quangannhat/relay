@@ -102,6 +102,9 @@ this note records the current repository state and the next bounded work.
   terminal mode is restored on exit.
 - Verification: `bun run build`, `bun test` (13 passing, including a Bun PTY
   test that sends `q` and verifies clean process exit), and `git diff --check`.
+- Kept terminal output processing enabled in raw input mode (`opost`) so
+  newline rendering remains aligned; PTY test checks CRLF output after raw mode
+  is active.
 
 ## Next steps
 

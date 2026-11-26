@@ -13,6 +13,9 @@ const stty = (args: string[]) => Bun.spawnSync({
 })
 
 const program = Effect.gen(function* () {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    return yield* Effect.fail(new Error("Relay TUI requires an interactive terminal"))
+  }
   const relay = yield* RelayRpcClient
   let refreshing = false
   const refresh = async () => {
@@ -109,11 +112,10 @@ const program = Effect.gen(function* () {
   let terminalSettings = ""
   yield* Effect.acquireRelease(
     Effect.sync(() => {
-      if (!process.stdin.isTTY) throw new Error("Relay TUI requires an interactive terminal")
       const saved = stty(["-g"])
       if (saved.exitCode !== 0) throw new Error("Unable to read terminal settings (stty -g failed)")
       terminalSettings = saved.stdout.toString().trim()
-      const raw = stty(["raw", "-echo"])
+      const raw = stty(["raw", "-echo", "opost"])
       if (raw.exitCode !== 0) throw new Error("Unable to enable terminal key input (stty raw failed)")
       process.stdin.on("data", onData)
       process.stdin.resume()
