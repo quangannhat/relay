@@ -91,54 +91,77 @@ const WaitForEvent = Tool.make("wait_for_event", {
     timeoutMs: Schema.optional(Schema.Int.pipe(Schema.between(1, 300_000)))
   }
 }).annotate(Tool.Readonly, true).annotate(Tool.Destructive, false).annotate(Tool.Idempotent, true).annotate(Tool.OpenWorld, false)
+const GetMetrics = Tool.make("get_metrics", {
+  ...Results,
+  description: "Show persisted MCP call counts and estimated tokens saved versus sending the full Relay workspace snapshot. Estimates use 4 characters per token."
+}).annotate(Tool.Readonly, true).annotate(Tool.Destructive, false).annotate(Tool.Idempotent, true).annotate(Tool.OpenWorld, false)
 
 export const RelayToolkit = Toolkit.make(
   RegisterRepository, ListRepositories, ListTasks, GetTask, CreateTask, ClaimTask, UpdateTask,
-  ReportProgress, PublishArtifact, CompleteTask, GetEvents, WaitForEvent
+  ReportProgress, PublishArtifact, CompleteTask, GetEvents, WaitForEvent, GetMetrics
 )
 
 const handlers = RelayToolkit.toLayer(Effect.gen(function* () {
   const relay = yield* RelayRpcClient
-  const safely = <A, E>(effect: Effect.Effect<A, E>) =>
-    effect.pipe(Effect.mapError(error => ({
+  const serialize = (value: unknown) => JSON.stringify(value) ?? "null"
+  const record = (tool: string, input: unknown, output: unknown) =>
+    relay.RecordMcpToolCall({
+      tool,
+      requestCharacters: serialize(input).length,
+      responseCharacters: serialize(output).length
+    }).pipe(Effect.catchAll(() => Effect.void))
+  const safely = <A, E>(tool: string, input: unknown, effect: Effect.Effect<A, E>) =>
+    effect.pipe(
+      Effect.tapBoth({
+        onFailure: error => record(tool, input, { error: error instanceof Error ? error.message : String(error) }),
+        onSuccess: output => record(tool, input, output)
+      }),
+      Effect.mapError(error => ({
       message: error instanceof Error && Object.keys(error).length === 0
         ? error.message
         : JSON.stringify(error)
-    })))
+      }))
+    )
   return {
-  register_repository: ({ name, paths }) => safely(relay.RegisterRepository({ name, paths })),
-  list_repositories: () => safely(relay.ListRepositories(undefined).pipe(Effect.map(repositories => ({ repositories })))),
-  list_tasks: ({ repositoryId, status }) => safely(
+  register_repository: input => safely("register_repository", input, relay.RegisterRepository(input)),
+  list_repositories: () => safely("list_repositories", {}, relay.ListRepositories(undefined).pipe(Effect.map(repositories => ({ repositories })))),
+  list_tasks: input => safely("list_tasks", input,
     relay.ListTasks(undefined).pipe(Effect.map(tasks => ({
       tasks: tasks
-        .filter(task => !repositoryId || task.repositoryId === repositoryId)
-        .filter(task => !status || task.status === status)
+        .filter(task => !input.repositoryId || task.repositoryId === input.repositoryId)
+        .filter(task => !input.status || task.status === input.status)
         .map(({ id, repositoryId, title, status, priority, assignee, updatedAt }) =>
           ({ id, repositoryId, title, status, priority, assignee, updatedAt }))
     })))
   ),
-  get_task: ({ taskId }) => safely(relay.GetTask({ taskId: taskId as TaskId })),
-  create_task: ({ repositoryId, title, description, priority, dependencies, actor }) => safely(relay.CreateTask({
-      repositoryId, title, description,
-      priority: priority as TaskPriority | undefined,
-      dependencies: dependencies as ReadonlyArray<TaskId> | undefined,
-      actor
+  get_task: input => safely("get_task", input, relay.GetTask({ taskId: input.taskId as TaskId })),
+  create_task: input => safely("create_task", input, relay.CreateTask({
+      repositoryId: input.repositoryId, title: input.title, description: input.description,
+      priority: input.priority as TaskPriority | undefined,
+      dependencies: input.dependencies as ReadonlyArray<TaskId> | undefined,
+      actor: input.actor
     })),
-  claim_task: ({ taskId, actor }) => safely(relay.ClaimTask({ taskId: taskId as TaskId, actor })),
-  update_task: ({ taskId, status, title, description, actor }) => safely(relay.UpdateTask({
-      taskId: taskId as TaskId, status: status as TaskStatus | undefined, title, description, actor
+  claim_task: input => safely("claim_task", input, relay.ClaimTask({ taskId: input.taskId as TaskId, actor: input.actor })),
+  update_task: input => safely("update_task", input, relay.UpdateTask({
+      taskId: input.taskId as TaskId, status: input.status as TaskStatus | undefined,
+      title: input.title, description: input.description, actor: input.actor
     })),
-  report_progress: ({ taskId, message, actor }) => safely(relay.ReportProgress({ taskId: taskId as TaskId, message, actor })),
-  publish_artifact: ({ taskId, artifact, actor }) => safely(relay.PublishArtifact({ taskId: taskId as TaskId, artifact, actor })),
-  complete_task: ({ taskId, actor }) => safely(relay.CompleteTask({ taskId: taskId as TaskId, actor })),
-  get_events: ({ afterId }) => safely(relay.GetEvents({ afterId }).pipe(Effect.map(events => ({ events })))),
-  wait_for_event: ({ taskId, types, timeoutMs }) => safely(
+  report_progress: input => safely("report_progress", input, relay.ReportProgress({
+    taskId: input.taskId as TaskId, message: input.message, actor: input.actor
+  })),
+  publish_artifact: input => safely("publish_artifact", input, relay.PublishArtifact({
+    taskId: input.taskId as TaskId, artifact: input.artifact, actor: input.actor
+  })),
+  complete_task: input => safely("complete_task", input, relay.CompleteTask({ taskId: input.taskId as TaskId, actor: input.actor })),
+  get_events: input => safely("get_events", input, relay.GetEvents({ afterId: input.afterId }).pipe(Effect.map(events => ({ events })))),
+  wait_for_event: input => safely("wait_for_event", input,
     relay.WaitForEvent({
-      taskId: taskId as TaskId,
-      types: types as ReadonlyArray<EventType> | undefined,
-      timeoutMs: timeoutMs ?? 30_000
+      taskId: input.taskId as TaskId,
+      types: input.types as ReadonlyArray<EventType> | undefined,
+      timeoutMs: input.timeoutMs ?? 30_000
     }).pipe(Effect.map(event => ({ event })))
-  )
+  ),
+  get_metrics: () => relay.GetMcpMetrics()
   }
 }))
 

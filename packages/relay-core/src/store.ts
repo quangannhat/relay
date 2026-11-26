@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite"
 import { Context, Effect, Layer } from "effect"
-import type { RelayEvent, Repository, Task, TaskId } from "./domain.js"
+import type { McpMetrics, McpToolMetric, RelayEvent, Repository, Task, TaskId } from "./domain.js"
 
 type TaskRow = Omit<Task, "dependencies" | "progress" | "artifacts"> & {
   dependencies: string; progress: string; artifacts: string
@@ -35,6 +35,8 @@ export class Store extends Context.Tag("relay/Store")<Store, {
   readonly getTask: (id: TaskId) => Effect.Effect<Task | undefined>
   readonly claimTask: (id: TaskId, actor: string, now: number) => Effect.Effect<{ task: Task; event: RelayEvent } | undefined>
   readonly listEvents: (afterId?: number) => Effect.Effect<ReadonlyArray<RelayEvent>>
+  readonly recordMcpToolCall: (tool: string, requestCharacters: number, responseCharacters: number, now: number) => Effect.Effect<void>
+  readonly getMcpMetrics: () => Effect.Effect<McpMetrics>
 }>() {}
 
 export const StoreLive = (file = "relay.db") => Layer.scoped(
@@ -57,6 +59,17 @@ export const StoreLive = (file = "relay.db") => Layer.scoped(
         CREATE TABLE IF NOT EXISTS events (
           id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT NOT NULL, task_id TEXT NOT NULL,
           actor TEXT NOT NULL, payload TEXT NOT NULL, created_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS mcp_tool_metrics (
+          tool TEXT PRIMARY KEY,
+          calls INTEGER NOT NULL,
+          request_characters INTEGER NOT NULL,
+          response_characters INTEGER NOT NULL,
+          estimated_request_tokens INTEGER NOT NULL,
+          estimated_response_tokens INTEGER NOT NULL,
+          estimated_workspace_baseline_tokens INTEGER NOT NULL,
+          estimated_tokens_saved INTEGER NOT NULL,
+          last_called_at INTEGER NOT NULL
         );
       `)
       const taskColumns = db.query("PRAGMA table_info(tasks)").all() as Array<{ name: string }>
@@ -135,8 +148,70 @@ export const StoreLive = (file = "relay.db") => Layer.scoped(
     const listEvents = (afterId = 0) => Effect.sync(() =>
       db.query("SELECT id, type, task_id as taskId, actor, payload, created_at as createdAt FROM events WHERE id > ? ORDER BY id")
         .all(afterId).map((r: any) => ({ ...r, payload: JSON.parse(r.payload) })))
+    const recordMcpToolCall = (tool: string, requestCharacters: number, responseCharacters: number, now: number) =>
+      Effect.gen(function* () {
+        const workspace = {
+          repositories: yield* listRepositories(),
+          tasks: yield* listTasks(),
+          events: yield* listEvents()
+        }
+        const requestTokens = Math.ceil(requestCharacters / 4)
+        const responseTokens = Math.ceil(responseCharacters / 4)
+        const baselineTokens = Math.ceil(JSON.stringify(workspace).length / 4)
+        const tokensSaved = Math.max(0, baselineTokens - requestTokens - responseTokens)
+        yield* Effect.sync(() => {
+          db.query(`
+            INSERT INTO mcp_tool_metrics (
+              tool, calls, request_characters, response_characters,
+              estimated_request_tokens, estimated_response_tokens,
+              estimated_workspace_baseline_tokens, estimated_tokens_saved, last_called_at
+            ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(tool) DO UPDATE SET
+              calls = calls + 1,
+              request_characters = request_characters + excluded.request_characters,
+              response_characters = response_characters + excluded.response_characters,
+              estimated_request_tokens = estimated_request_tokens + excluded.estimated_request_tokens,
+              estimated_response_tokens = estimated_response_tokens + excluded.estimated_response_tokens,
+              estimated_workspace_baseline_tokens = estimated_workspace_baseline_tokens + excluded.estimated_workspace_baseline_tokens,
+              estimated_tokens_saved = estimated_tokens_saved + excluded.estimated_tokens_saved,
+              last_called_at = excluded.last_called_at
+          `).run(tool, requestCharacters, responseCharacters, requestTokens, responseTokens, baselineTokens, tokensSaved, now)
+        })
+      })
+    const getMcpMetrics = () => Effect.sync(() => {
+      const byTool = db.query(`
+        SELECT tool, calls, request_characters as requestCharacters,
+          response_characters as responseCharacters,
+          estimated_request_tokens as estimatedRequestTokens,
+          estimated_response_tokens as estimatedResponseTokens,
+          estimated_workspace_baseline_tokens as estimatedWorkspaceBaselineTokens,
+          estimated_tokens_saved as estimatedTokensSaved,
+          last_called_at as lastCalledAt
+        FROM mcp_tool_metrics ORDER BY calls DESC, tool
+      `).all() as Array<McpToolMetric>
+      return byTool.reduce<McpMetrics>((total, metric) => ({
+        calls: total.calls + metric.calls,
+        requestCharacters: total.requestCharacters + metric.requestCharacters,
+        responseCharacters: total.responseCharacters + metric.responseCharacters,
+        estimatedRequestTokens: total.estimatedRequestTokens + metric.estimatedRequestTokens,
+        estimatedResponseTokens: total.estimatedResponseTokens + metric.estimatedResponseTokens,
+        estimatedWorkspaceBaselineTokens: total.estimatedWorkspaceBaselineTokens + metric.estimatedWorkspaceBaselineTokens,
+        estimatedTokensSaved: total.estimatedTokensSaved + metric.estimatedTokensSaved,
+        byTool: [...total.byTool, metric]
+      }), {
+        calls: 0,
+        requestCharacters: 0,
+        responseCharacters: 0,
+        estimatedRequestTokens: 0,
+        estimatedResponseTokens: 0,
+        estimatedWorkspaceBaselineTokens: 0,
+        estimatedTokensSaved: 0,
+        byTool: []
+      })
+    })
     return Store.of({
-      addRepository, listRepositories, saveTaskAndEvent, saveTasksAndEvents, listTasks, getTask, claimTask, listEvents
+      addRepository, listRepositories, saveTaskAndEvent, saveTasksAndEvents, listTasks, getTask, claimTask, listEvents,
+      recordMcpToolCall, getMcpMetrics
     })
   }))
 )

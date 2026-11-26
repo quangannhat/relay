@@ -51,4 +51,29 @@ export const RelayEvent = Schema.Struct({
 })
 export type RelayEvent = Schema.Schema.Type<typeof RelayEvent>
 
+export const McpToolMetric = Schema.Struct({
+  tool: Schema.String,
+  calls: Schema.Number,
+  requestCharacters: Schema.Number,
+  responseCharacters: Schema.Number,
+  estimatedRequestTokens: Schema.Number,
+  estimatedResponseTokens: Schema.Number,
+  estimatedWorkspaceBaselineTokens: Schema.Number,
+  estimatedTokensSaved: Schema.Number,
+  lastCalledAt: Schema.Number
+})
+export type McpToolMetric = Schema.Schema.Type<typeof McpToolMetric>
+
+export const McpMetrics = Schema.Struct({
+  calls: Schema.Number,
+  requestCharacters: Schema.Number,
+  responseCharacters: Schema.Number,
+  estimatedRequestTokens: Schema.Number,
+  estimatedResponseTokens: Schema.Number,
+  estimatedWorkspaceBaselineTokens: Schema.Number,
+  estimatedTokensSaved: Schema.Number,
+  byTool: Schema.Array(McpToolMetric)
+})
+export type McpMetrics = Schema.Schema.Type<typeof McpMetrics>
+
 export type TaskSummary = Pick<Task, "id" | "title" | "status" | "priority" | "assignee" | "updatedAt">

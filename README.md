@@ -35,6 +35,18 @@ cancellable blocking tool because the installed Effect MCP server does not
 implement resource subscribe/unsubscribe; persisted events remain the
 reconnection path.
 
+The TUI reads an initial snapshot, then subscribes to the daemon's
+`SubscribeEvents` stream. The daemon replays persisted events after the
+subscriber's cursor before delivering live PubSub events, so the TUI does not
+poll for updates.
+
+MCP exposes `get_metrics` for persisted per-tool call counts, request/response
+size estimates, and estimated tokens saved. The estimate compares each
+serialized MCP argument/result against serializing the entire current Relay
+workspace (repositories, tasks, and events), with a simple 4-characters-per-
+token heuristic. It is a directional estimate, not model-tokenizer accounting;
+tool schemas, system prompts, and other conversation context are excluded.
+
 ## Run
 
 Requires Bun 1.1+.
@@ -52,6 +64,8 @@ bun run tui
 ```
 
 Run `bun run daemon` in its own terminal before `bun run mcp` or `bun run tui`.
+If a daemon already owns the configured socket, starting another daemon prints
+that it is already running and exits without disturbing the active process.
 The project includes an OpenCode MCP config in `opencode.json`; it launches
 the MCP server directly with `bun` so stdout remains a clean protocol channel.
 Other clients can launch `bun run mcp`. Set `RELAY_DB` or `RELAY_SOCKET` on the
@@ -61,3 +75,22 @@ daemon and clients to override their shared defaults.
 repository, runs a simulated claim/progress/completion flow, and demonstrates
 a filtered completion subscription. Do not run it at the same time as the
 daemon using that same database.
+
+## Compile and install
+
+Build a self-contained executable for the current OS and architecture:
+
+```sh
+bun run compile
+./dist/relay --help
+```
+
+The executable supports `relay daemon`, `relay tui`, and `relay mcp`. Install
+it for the current user under `~/.local/bin/relay` with:
+
+```sh
+bun run install:binary
+```
+
+Set `RELAY_INSTALL_DIR` to install somewhere else. The install command compiles
+first; add the destination directory to `PATH` if it is not already there.

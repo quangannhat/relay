@@ -40,6 +40,7 @@ it("interoperates with the official MCP TypeScript client over stdio", async () 
     await client.connect(transport)
     const { tools } = await client.listTools()
     expect(tools.map(tool => tool.name)).toContain("wait_for_event")
+    expect(tools.map(tool => tool.name)).toContain("get_metrics")
 
     const call = (name: string, args: Record<string, unknown> = {}) =>
       client.callTool({ name, arguments: args })
@@ -85,6 +86,13 @@ it("interoperates with the official MCP TypeScript client over stdio", async () 
 
     const failedClaim = await call("claim_task", { taskId: "T-missing", actor: "agent-x" })
     expect(failedClaim.isError).toBe(true)
+
+    const metrics = await call("get_metrics")
+    expect(metrics.isError).toBe(false)
+    expect(metrics.structuredContent!.calls).toBeGreaterThan(0)
+    expect(metrics.structuredContent!.estimatedTokensSaved).toBeGreaterThan(0)
+    expect((metrics.structuredContent!.byTool as Array<{ tool: string }>).some(row => row.tool === "get_task"))
+      .toBe(true)
   } finally {
     try { await client.close() } finally {
       daemon.kill("SIGTERM")
