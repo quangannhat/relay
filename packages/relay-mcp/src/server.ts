@@ -77,6 +77,11 @@ const CompleteTask = Tool.make("complete_task", {
   description: "Complete a task and atomically unblock ready dependents.",
   parameters: { taskId: TaskIdSchema, actor: Actor }
 })
+const SubmitResult = Tool.make("submit_result", {
+  ...Results,
+  description: "Claim the task if it is still pending, publish result as its artifact, and complete it, in one call.",
+  parameters: { taskId: TaskIdSchema, result: Schema.String, actor: Actor }
+})
 const GetEvents = Tool.make("get_events", {
   ...Results,
   description: "Get persisted events with IDs greater than afterId.",
@@ -98,7 +103,7 @@ const GetMetrics = Tool.make("get_metrics", {
 
 export const RelayToolkit = Toolkit.make(
   RegisterRepository, ListRepositories, ListTasks, GetTask, CreateTask, ClaimTask, UpdateTask,
-  ReportProgress, PublishArtifact, CompleteTask, GetEvents, WaitForEvent, GetMetrics
+  ReportProgress, PublishArtifact, CompleteTask, SubmitResult, GetEvents, WaitForEvent, GetMetrics
 )
 
 const handlers = RelayToolkit.toLayer(Effect.gen(function* () {
@@ -153,6 +158,15 @@ const handlers = RelayToolkit.toLayer(Effect.gen(function* () {
     taskId: input.taskId as TaskId, artifact: input.artifact, actor: input.actor
   })),
   complete_task: input => safely("complete_task", input, relay.CompleteTask({ taskId: input.taskId as TaskId, actor: input.actor })),
+  // One round trip instead of claim + publish + complete; every extra tool call costs the agent a model turn.
+  submit_result: input => safely("submit_result", input, Effect.gen(function* () {
+    const taskId = input.taskId as TaskId
+    const task = yield* relay.GetTask({ taskId })
+    if (task.status === "pending" && task.assignee === null) yield* relay.ClaimTask({ taskId, actor: input.actor })
+    yield* relay.PublishArtifact({ taskId, artifact: input.result, actor: input.actor })
+    const completed = yield* relay.CompleteTask({ taskId, actor: input.actor })
+    return { taskId: completed.id, status: completed.status }
+  })),
   get_events: input => safely("get_events", input, relay.GetEvents({ afterId: input.afterId }).pipe(Effect.map(events => ({ events })))),
   wait_for_event: input => safely("wait_for_event", input,
     relay.WaitForEvent({

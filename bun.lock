@@ -7,6 +7,7 @@
       "devDependencies": {
         "@types/node": "^22.10.2",
         "bun-types": "^1.1.38",
+        "effect": "3.22.5",
         "typescript": "^5.7.2",
       },
     },

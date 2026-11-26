@@ -84,6 +84,14 @@ it("interoperates with the official MCP TypeScript client over stdio", async () 
     expect((history.structuredContent!.events as Array<{ type: string }>).map(event => event.type))
       .toContain("ProgressReported")
 
+    const handoff = await call("create_task", { repositoryId, title: "Catalog", actor: "agent-a" })
+    const handoffId = handoff.structuredContent!.id as string
+    const submitted = await call("submit_result", { taskId: handoffId, result: "catalog body", actor: "agent-a" })
+    expect(submitted.structuredContent).toEqual({ taskId: handoffId, status: "completed" })
+    const handedOff = await call("get_task", { taskId: handoffId })
+    expect(handedOff.structuredContent!.artifacts).toEqual(["catalog body"])
+    expect(handedOff.structuredContent!.assignee).toBe("agent-a")
+
     const failedClaim = await call("claim_task", { taskId: "T-missing", actor: "agent-x" })
     expect(failedClaim.isError).toBe(true)
 

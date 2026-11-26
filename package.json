@@ -9,11 +9,13 @@
     "mcp": "bun run packages/relay-mcp/src/main.ts",
     "daemon": "bun run packages/relay-daemon/src/main.ts",
     "tui": "bun run --filter relay-tui start",
+    "bench": "bun run scripts/bench/run.ts",
     "test": "bun test"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
     "bun-types": "^1.1.38",
+    "effect": "3.22.5",
     "typescript": "^5.7.2"
   }
 }
