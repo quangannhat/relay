@@ -2,7 +2,7 @@ import { Context, Effect, Layer, PubSub, Queue, Scope } from "effect"
 import { randomUUID } from "node:crypto"
 import { Conflict, InvalidTransition, NotFound } from "./errors.js"
 import { Store, type TaskMutation } from "./store.js"
-import type { EventType, RelayEvent, Repository, Task, TaskId, TaskPriority, TaskStatus } from "./domain.js"
+import type { EventType, McpMetrics, RelayEvent, Repository, Task, TaskId, TaskPriority, TaskStatus } from "./domain.js"
 
 export type NewTask = {
   readonly repositoryId: string
@@ -27,7 +27,9 @@ export class Coordination extends Context.Tag("relay/Coordination")<Coordination
   readonly waitForTask: (id: TaskId, statuses: ReadonlyArray<TaskStatus>) =>
     Effect.Effect<Task, NotFound, Scope.Scope>
   readonly getEvents: (afterId?: number) => Effect.Effect<ReadonlyArray<RelayEvent>>
-  readonly subscribe: (taskId: TaskId, types?: ReadonlyArray<EventType>) => Effect.Effect<Queue.Dequeue<RelayEvent>, never, Scope.Scope>
+  readonly subscribe: (taskId?: TaskId, types?: ReadonlyArray<EventType>) => Effect.Effect<Queue.Dequeue<RelayEvent>, never, Scope.Scope>
+  readonly recordMcpToolCall: (tool: string, requestCharacters: number, responseCharacters: number) => Effect.Effect<void>
+  readonly getMcpMetrics: () => Effect.Effect<McpMetrics>
 }>() {}
 
 const event = (taskId: TaskId, type: EventType, actor: string, payload: Record<string, unknown>): Omit<RelayEvent, "id"> => ({
@@ -165,11 +167,14 @@ export const CoordinationLive = Layer.effect(
         return yield* loop()
       }),
       getEvents: (afterId) => store.listEvents(afterId),
+      recordMcpToolCall: (tool, requestCharacters, responseCharacters) =>
+        store.recordMcpToolCall(tool, requestCharacters, responseCharacters, Date.now()),
+      getMcpMetrics: () => store.getMcpMetrics(),
       subscribe: (taskId, types) => Effect.gen(function* () {
         const source = yield* PubSub.subscribe(pubsub)
         const output = yield* Queue.unbounded<RelayEvent>()
         yield* Effect.forkScoped(Effect.forever(Effect.flatMap(Queue.take(source), item =>
-          item.taskId === taskId && (!types || types.includes(item.type))
+          (!taskId || item.taskId === taskId) && (!types || types.includes(item.type))
             ? Queue.offer(output, item)
             : Effect.void)))
         return output

@@ -1,6 +1,6 @@
 import { RpcSerialization, RpcServer } from "@effect/rpc"
 import { NodeSocketServer } from "@effect/platform-node"
-import { Effect, Layer, Option, Queue, Schema } from "effect"
+import { Effect, Layer, Option, Queue, Schema, Stream } from "effect"
 import { Coordination, CoordinationLive } from "relay-core/engine"
 import { StoreLive } from "relay-core"
 import { Conflict, InvalidTransition, NotFound } from "relay-core/errors"
@@ -34,6 +34,18 @@ const handlers = RelayRpc.toLayer(Effect.gen(function* () {
     PublishArtifact: ({ taskId, artifact, actor }) => mapError(relay.publishArtifact(taskId, artifact, actor)),
     CompleteTask: ({ taskId, actor }) => mapError(relay.completeTask(taskId, actor)),
     GetEvents: ({ afterId }) => relay.getEvents(afterId),
+    SubscribeEvents: ({ afterId }) => Stream.unwrapScoped(Effect.gen(function* () {
+      const queue = yield* relay.subscribe()
+      const history = yield* relay.getEvents(afterId)
+      let cursor = afterId ?? 0
+      return Stream.concat(Stream.fromIterable(history), Stream.fromQueue(queue)).pipe(
+        Stream.filter(event => event.id > cursor),
+        Stream.tap(event => Effect.sync(() => { cursor = event.id }))
+      )
+    })),
+    RecordMcpToolCall: ({ tool, requestCharacters, responseCharacters }) =>
+      relay.recordMcpToolCall(tool, requestCharacters, responseCharacters),
+    GetMcpMetrics: () => relay.getMcpMetrics(),
     WaitForEvent: ({ taskId, types, timeoutMs }) => Effect.scoped(Effect.gen(function* () {
       const queue = yield* relay.subscribe(taskId as TaskId, types)
       return Option.getOrNull(yield* Effect.timeoutOption(Queue.take(queue), timeoutMs))

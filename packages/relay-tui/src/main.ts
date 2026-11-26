@@ -1,4 +1,4 @@
-import { Effect } from "effect"
+import { Effect, Schedule, Stream } from "effect"
 import { RelayRpcClient, RelayRpcClientLive } from "relay-daemon/client"
 import { relaySocketPath } from "relay-daemon/socket"
 import { createState } from "./context/state.js"
@@ -18,35 +18,64 @@ const program = Effect.gen(function* () {
   }
   const relay = yield* RelayRpcClient
   let refreshing = false
+  let refreshQueued = false
+  let eventCursor = 0
   const refresh = async () => {
-    if (refreshing) return
+    if (refreshing) {
+      refreshQueued = true
+      return
+    }
     refreshing = true
     state.loading = true
     state.message = "Refreshing from daemon…"
     render(state)
     try {
-      const data = await Effect.runPromise(Effect.gen(function* () {
-        const repositories = yield* relay.ListRepositories(undefined)
-        const tasks = yield* relay.ListTasks(undefined)
-        const events = yield* relay.GetEvents({})
-        return { repositories, tasks, events }
-      }))
-      state.repositories = data.repositories
-      state.tasks = data.tasks
-      state.events = data.events
-      state.selected = Math.min(state.selected, Math.max(0, state.tasks.length - 1))
+      do {
+        refreshQueued = false
+        const data = await Effect.runPromise(Effect.gen(function* () {
+          const repositories = yield* relay.ListRepositories(undefined)
+          const tasks = yield* relay.ListTasks(undefined)
+          const events = yield* relay.GetEvents({ afterId: eventCursor })
+          return { repositories, tasks, events }
+        }))
+        state.repositories = data.repositories
+        state.tasks = data.tasks
+        state.selected = Math.min(state.selected, Math.max(0, state.tasks.length - 1))
+        for (const event of data.events) {
+          if (event.id <= eventCursor) continue
+          eventCursor = event.id
+          state.events = [...state.events, event].slice(-500)
+        }
+      } while (refreshQueued && state.running)
       state.message = ""
     } catch (error) {
       state.message = `Daemon unavailable: ${error instanceof Error ? error.message : String(error)}`
     } finally {
       state.loading = false
       refreshing = false
-      render(state)
+      if (state.running) render(state)
     }
   }
   render(state)
   void refresh()
-  const timer = setInterval(() => void refresh(), 3000)
+  const watchEvents = Effect.suspend(() => Stream.runForEach(
+    relay.SubscribeEvents({ afterId: eventCursor }),
+    event => Effect.gen(function* () {
+      if (event.id <= eventCursor) return
+      eventCursor = event.id
+      state.events = [...state.events, event].slice(-500)
+      yield* Effect.promise(refresh)
+    })
+  )).pipe(
+    Effect.retry({ schedule: Schedule.spaced("1 second") }),
+    Effect.catchAllCause(cause => Effect.sync(() => {
+      if (state.running) {
+        state.message = `Event subscription failed: ${String(cause)}`
+        render(state)
+      }
+    }))
+  )
+  yield* Effect.forkScoped(watchEvents)
 
   const handleKey = (key: string) => Effect.gen(function* () {
     if (state.titleInput !== null) {
@@ -121,7 +150,6 @@ const program = Effect.gen(function* () {
       process.stdin.resume()
     }),
     () => Effect.sync(() => {
-      clearInterval(timer)
       process.stdin.off("data", onData)
       if (terminalSettings) stty([terminalSettings])
       process.stdout.write("\u001b[?25h")

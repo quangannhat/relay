@@ -1,7 +1,7 @@
-import { Rpc, RpcGroup } from "@effect/rpc"
+import { Rpc, RpcGroup, RpcSchema } from "@effect/rpc"
 import { Schema } from "effect"
 import {
-  EventType, RelayEvent, Repository, Task, TaskId, TaskPriority, TaskStatus
+  EventType, McpMetrics, RelayEvent, Repository, Task, TaskId, TaskPriority, TaskStatus
 } from "relay-core/domain"
 
 export const RelayRpcError = Schema.Union(
@@ -69,6 +69,19 @@ export const RelayRpc = RpcGroup.make(
     payload: { afterId: Schema.optional(Schema.Number) },
     success: Schema.Array(RelayEvent)
   }),
+  Rpc.make("SubscribeEvents", {
+    payload: { afterId: Schema.optional(Schema.Number) },
+    success: RpcSchema.Stream({ success: RelayEvent, failure: Schema.Never })
+  }),
+  Rpc.make("RecordMcpToolCall", {
+    payload: {
+      tool: Schema.String,
+      requestCharacters: Schema.Number,
+      responseCharacters: Schema.Number
+    },
+    success: Schema.Void
+  }),
+  Rpc.make("GetMcpMetrics", { success: McpMetrics }),
   Rpc.make("WaitForEvent", {
     payload: {
       taskId: TaskId,

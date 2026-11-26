@@ -13,9 +13,11 @@ Start `bun run daemon` in another terminal, then run `bun run tui`.
 - `r`: refresh
 - `q` or `Ctrl+C`: quit
 
-The TUI refreshes repositories, tasks, and events every three seconds. Set
-`RELAY_DB` and `RELAY_SOCKET` consistently for both daemon and TUI when using
-non-default locations.
+The TUI takes an initial snapshot, then subscribes to the daemon's event
+stream. It refreshes repository/task views when events arrive; `r` requests a
+manual refresh. The event cursor is replayed on reconnect so events are not
+lost across short disconnects. Set `RELAY_DB` and `RELAY_SOCKET` consistently
+for both daemon and TUI when using non-default locations.
 
 Keyboard input uses Bun's `process.stdin` terminal events in raw mode, so
 single-key navigation works without Enter. No Node modules or readline layer
